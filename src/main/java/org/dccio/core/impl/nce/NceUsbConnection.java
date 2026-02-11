@@ -11,6 +11,8 @@ import org.dccio.core.impl.common.BaseCommandStationConnection;
 import org.dccio.core.impl.common.JmriAccessoryController;
 import org.dccio.core.impl.common.JmriProgrammerSession;
 import org.dccio.core.impl.common.JmriThrottleSession;
+import org.dccio.core.impl.nce.DirectNceAccessoryController;
+import org.dccio.core.impl.nce.DirectNceThrottleSession;
 
 import jmri.DccThrottle;
 import jmri.GlobalProgrammerManager;
@@ -39,6 +41,7 @@ public final class NceUsbConnection extends BaseCommandStationConnection {
     private final NceSystemConnectionMemo memo;
 
     private JmriAccessoryController accessoryController;
+    private DirectNceAccessoryController directAccessoryController;
     private JmriProgrammerSession programmerSession;
 
     private final PropertyChangeListener powerListener = this::onPowerChange;
@@ -82,6 +85,7 @@ public final class NceUsbConnection extends BaseCommandStationConnection {
         if (turnoutManager != null) {
             accessoryController = new JmriAccessoryController(id, turnoutManager);
         }
+        directAccessoryController = new DirectNceAccessoryController(id, tc);
         GlobalProgrammerManager gpm = InstanceManager.getNullableDefault(GlobalProgrammerManager.class);
         if (gpm != null) {
             programmerSession = new JmriProgrammerSession(id, gpm);
@@ -99,33 +103,69 @@ public final class NceUsbConnection extends BaseCommandStationConnection {
         if (tm == null) {
             throw new IOException("No ThrottleManager available on NCE connection");
         }
+        NceTrafficController tc = memo.getNceTrafficController();
+        if (tc == null) {
+            throw new IOException("NCE TrafficController not available");
+        }
         final DccThrottle[] holder = new DccThrottle[1];
         final IOException[] error = new IOException[1];
+        final Object lock = new Object();
         ThrottleListener listener = new ThrottleListener() {
             @Override
             public void notifyThrottleFound(DccThrottle t) {
-                holder[0] = t;
+                synchronized (lock) {
+                    holder[0] = t;
+                    lock.notifyAll();
+                }
             }
 
             @Override
-            public void notifyFailedThrottleRequest(jmri.LocoAddress address, String reason) {
-                error[0] = new IOException("Throttle request failed: " + reason);
+            public void notifyFailedThrottleRequest(jmri.LocoAddress addr, String reason) {
+                synchronized (lock) {
+                    error[0] = new IOException("Throttle request failed: " + reason);
+                    lock.notifyAll();
+                }
             }
 
             @Override
-            public void notifyDecisionRequired(jmri.LocoAddress address, ThrottleListener.DecisionType question) {
-                // Default behavior: cancel the request if a decision is required
-                error[0] = new IOException("Throttle address " + address + " is in use, decision required: " + question);
+            public void notifyDecisionRequired(jmri.LocoAddress addr, ThrottleListener.DecisionType question) {
+                synchronized (lock) {
+                    error[0] = new IOException("Throttle address " + addr + " is in use, decision required: " + question);
+                    lock.notifyAll();
+                }
             }
         };
         tm.requestThrottle(address, longAddress, listener, false);
+        synchronized (lock) {
+            try {
+                long timeout = 5000;
+                long start = System.currentTimeMillis();
+                while (holder[0] == null && error[0] == null) {
+                    long remaining = timeout - (System.currentTimeMillis() - start);
+                    if (remaining <= 0) {
+                        throw new IOException("Timeout waiting for throttle for address " + address);
+                    }
+                    lock.wait(remaining);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while waiting for throttle", e);
+            }
+        }
         if (error[0] != null) {
             throw error[0];
         }
         if (holder[0] == null) {
             throw new IOException("Throttle not granted for address " + address);
         }
-        return new JmriThrottleSession(id, address, longAddress, holder[0], eventBus);
+        DirectNceThrottleSession session = new DirectNceThrottleSession(id, address, longAddress, tc, holder[0]);
+        try {
+            session.setSpeed(0.0f);
+            session.setDirection(true);
+        } catch (Exception e) {
+            // Ignore initial command errors
+        }
+        return session;
     }
 
     @Override
@@ -135,6 +175,9 @@ public final class NceUsbConnection extends BaseCommandStationConnection {
 
     @Override
     public AccessoryController getAccessoryController() {
+        if (directAccessoryController != null) {
+            return directAccessoryController;
+        }
         return accessoryController;
     }
 

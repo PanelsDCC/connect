@@ -6,7 +6,7 @@
 
   <groupId>org.dccio</groupId>
   <artifactId>dcc-io-daemon</artifactId>
-  <version>0.2.3</version>
+  <version>0.3.0</version>
 
   <properties>
     <!-- Path to JMRI installation - can be either:

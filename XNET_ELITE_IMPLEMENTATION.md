@@ -2,7 +2,9 @@
 
 ## Overview
 
-This document explains the special implementation of XpressNet throttle control for the Hornby Elite command station and why we bypass JMRI's standard throttle abstraction for speed/direction commands.
+This document explains the special implementation of XpressNet throttle and accessory control for the Hornby Elite command station and why we bypass JMRI's standard throttle/turnout abstractions for runtime commands.
+
+**General pattern:** For how we interface with JMRI and how to add other controllers, see [docs/JMRI-INTEGRATION.md](docs/JMRI-INTEGRATION.md). This file focuses on Elite-specific behaviour and history.
 
 ## The Problem
 
@@ -49,45 +51,40 @@ def throttle(self, speed, direction):
 
 ## Our Solution
 
-We implemented a hybrid approach that bypasses JMRI's throttle abstraction for speed/direction commands while still using JMRI for functions:
+We use the **jmrix-only pattern** (see [docs/JMRI-INTEGRATION.md](docs/JMRI-INTEGRATION.md)): build messages with JMRI's jmrix message classes and send via the traffic controller; do not use the throttle/turnout bean layer for runtime commands.
 
 ### DirectXNetThrottleSession
 
 The `DirectXNetThrottleSession` class:
 
-1. **Bypasses JMRI for Speed/Direction** - Sends `0xE4 0x13` commands directly via `XNetTrafficController`, matching the Python implementation exactly
-2. **Uses JMRI for Functions** - Still uses JMRI's `DccThrottle` for function control (which works fine)
-3. **Immediate Activation** - Sends an initial speed 0 command when the throttle is created, activating it immediately
-4. **No Event Publishing** - Doesn't publish `THROTTLE_UPDATED` events to avoid infinite loops (events are meant for external changes, not our own commands)
-
-### Implementation Details
+1. **Speed/Direction** - Uses `XNetMessage.getSpeedAndDirectionMsg(address, SpeedStepMode.NMRA_DCC_128, speed, forward)` and `XNetTrafficController.sendXNetMessage(msg, null)`. No hand-built bytes; JMRI's jmrix layer encodes the protocol.
+2. **Uses JMRI for Functions** - Still uses JMRI's `DccThrottle` for function control (which works fine).
+3. **Immediate Activation** - Sends an initial speed 0 command when the throttle is created, activating it on the Elite.
+4. **No Event Publishing** - Doesn't publish `THROTTLE_UPDATED` events to avoid infinite loops (events are meant for external changes, not our own commands).
 
 **File:** `src/main/java/org/dccio/core/impl/xnet/elite/DirectXNetThrottleSession.java`
 
 **Key Methods:**
-- `setSpeed(float speed)` - Sends direct `0xE4 0x13` command with speed (0-127) and direction
-- `setDirection(boolean forward)` - Sends direct `0xE4 0x13` command with current speed and new direction
-- `setFunction(int, boolean)` - Uses JMRI throttle for functions
-- `close()` - Releases JMRI throttle (used for functions)
+- `setSpeed(float speed)` - Calls `XNetMessage.getSpeedAndDirectionMsg(...)`, sends via traffic controller.
+- `setDirection(boolean forward)` - Same message builder with updated direction.
+- `setFunction(int, boolean)` - Uses JMRI throttle for functions.
+- `close()` - Releases JMRI throttle (used for functions).
 
-**Address Encoding:**
-- Short addresses (< 100): `[0x00, address]`
-- Long addresses (≥ 100): `[(address >> 8) | 0xC0, address & 0xFF]`
+### DirectXNetAccessoryController
 
-**Speed/Direction Encoding:**
-- Speed: 0-127 (converted from normalized 0.0-1.0)
-- Direction: Bit 7 of speed byte (0x80 = forward, 0x00 = reverse)
-- Checksum: XOR of all bytes
+Accessories had the same kind of flakiness when going through JMRI's TurnoutManager/Turnout. We use:
+
+- `XNetMessage.getTurnoutCommandMsg(pNumber, closed, thrown, true)` for the wire format (with Elite off-by-one: `pNumber = address + 1`).
+- `XNetTrafficController.sendXNetMessage(msg, null)` to send.
+
+**File:** `src/main/java/org/dccio/core/impl/xnet/elite/DirectXNetAccessoryController.java`
 
 ### Integration Point
 
 **File:** `src/main/java/org/dccio/core/impl/xnet/elite/XNetEliteConnection.java`
 
-The `openThrottle()` method:
-1. Acquires a JMRI throttle (for functions)
-2. Creates a `DirectXNetThrottleSession` wrapper
-3. Sends initial activation command (speed 0, forward)
-4. Returns the direct throttle session
+- **Throttles:** `openThrottle()` acquires a JMRI throttle (for functions), creates a `DirectXNetThrottleSession` with the traffic controller and that throttle, sends an initial speed 0 command, and returns the direct session.
+- **Accessories:** `getAccessoryController()` returns a `DirectXNetAccessoryController` (created in `attachManagersAndListeners`) that uses the same traffic controller and `XNetMessage.getTurnoutCommandMsg`. The JMRI `JmriAccessoryController` is only used as fallback if the direct controller is not available.
 
 ## Benefits
 
@@ -120,4 +117,4 @@ Our direct implementation is simpler, works immediately, and matches the proven 
 
 ## Future Considerations
 
-If JMRI's throttle abstraction is updated to handle Elite activation properly, we could potentially switch back to using `JmriThrottleSession` for all commands. However, the current direct implementation is working well and provides the reliability we need.
+If JMRI's throttle/turnout abstractions were updated to handle Elite reliably, we could switch back to the bean layer. The current approach (jmrix message builders + traffic controller only) is documented as the standard pattern in [docs/JMRI-INTEGRATION.md](docs/JMRI-INTEGRATION.md) and should be used when adding other controllers.

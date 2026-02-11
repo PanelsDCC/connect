@@ -11,7 +11,6 @@ import org.dccio.core.impl.common.BaseCommandStationConnection;
 import org.dccio.core.impl.common.JmriAccessoryController;
 import org.dccio.core.impl.common.JmriProgrammerSession;
 import org.dccio.core.impl.common.JmriThrottleSession;
-import org.dccio.core.impl.xnet.elite.DirectXNetThrottleSession;
 
 import jmri.DccThrottle;
 import jmri.GlobalProgrammerManager;
@@ -45,6 +44,7 @@ public final class XNetEliteConnection extends BaseCommandStationConnection {
     private final EliteXNetSystemConnectionMemo memo;
 
     private JmriAccessoryController accessoryController;
+    private DirectXNetAccessoryController directAccessoryController;
     private JmriProgrammerSession programmerSession;
 
     private final PropertyChangeListener powerListener = this::onPowerChange;
@@ -182,6 +182,12 @@ public final class XNetEliteConnection extends BaseCommandStationConnection {
         TurnoutManager turnoutManager = memo.getTurnoutManager();
         if (turnoutManager != null) {
             accessoryController = new JmriAccessoryController(id, turnoutManager);
+        }
+
+        // Create direct XpressNet accessory controller that sends packets via
+        // the low-level XNetTrafficController, bypassing JMRI's turnout layer.
+        if (tc != null) {
+            directAccessoryController = new DirectXNetAccessoryController(id, tc);
         }
         GlobalProgrammerManager gpm = InstanceManager.getNullableDefault(GlobalProgrammerManager.class);
         if (gpm != null) {
@@ -363,6 +369,10 @@ public final class XNetEliteConnection extends BaseCommandStationConnection {
 
     @Override
     public AccessoryController getAccessoryController() {
+        // Prefer the direct XpressNet implementation for runtime reliability.
+        if (directAccessoryController != null) {
+            return directAccessoryController;
+        }
         return accessoryController;
     }
 

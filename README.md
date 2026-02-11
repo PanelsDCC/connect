@@ -14,12 +14,12 @@ DCC IO Daemon uses [JMRI](https://www.jmri.org/) (Java Model Railroad Interface)
 
 ## Philosophy
 
-JMRI provides excellent support for a wide variety of DCC command stations through its `jmrix` layer, but using JMRI directly means dealing with its complex object model, data structures, and dependencies. This project bypasses all of that complexity by:
+JMRI provides excellent support for a wide variety of DCC command stations through its `jmrix` layer, but using JMRI directly means dealing with its complex object model, data structures, and dependencies. This project bypasses that complexity by:
 
-- **Using JMRI's controller support via abstract interfaces** - We leverage JMRI's `jmrix` implementations (XpressNet, DCC++, NCE, etc.) without needing to understand or interact with JMRI's internal data model
-- **Providing simple, DCC-spec-focused APIs** - Clean interfaces for throttles and accessories that follow the DCC specification, not JMRI's object hierarchy
-- **Minimal dependencies** - Only what's needed for controller communication, not the full JMRI ecosystem
-- **RESTful API** - Language-agnostic HTTP/JSON interface perfect for integration with other systems
+- **Using JMRI's jmrix layer for transport and message building** - We use each system's traffic controller and message classes (e.g. `XNetMessage.getSpeedAndDirectionMsg`, `getTurnoutCommandMsg`) to build and send packets, and we skip the higher-level bean layer (TurnoutManager, ThrottleManager) where it is unreliable. See [docs/JMRI-INTEGRATION.md](docs/JMRI-INTEGRATION.md) for the full pattern and how to add new controllers.
+- **Providing simple, DCC-spec-focused APIs** - Clean interfaces for throttles and accessories that follow the DCC specification, not JMRI's object hierarchy.
+- **Minimal dependencies** - Only what's needed for controller communication, not the full JMRI ecosystem.
+- **RESTful API** - Language-agnostic HTTP/JSON interface for integration with other systems.
 
 Perfect for headless deployments on Raspberry Pi or other embedded systems where you want DCC control without the overhead of a full JMRI installation.
 
@@ -36,7 +36,8 @@ Perfect for headless deployments on Raspberry Pi or other embedded systems where
 ## Supported Controllers
 
 - **Hornby Elite / XpressNet** (`xnet-elite`) - Serial/USB - Tested
-  - See [XNET_ELITE_IMPLEMENTATION.md](XNET_ELITE_IMPLEMENTATION.md) for details on the special implementation
+  - See [XNET_ELITE_IMPLEMENTATION.md](XNET_ELITE_IMPLEMENTATION.md) for Elite-specific details.
+- For how we interface with JMRI and how to add new controllers, see [docs/JMRI-INTEGRATION.md](docs/JMRI-INTEGRATION.md).
 - **NCE PowerCab Serial** (`nce-serial`) - Serial/USB - Untested
 - **NCE PowerCab USB** (`nce-usb`) - USB - Untested
 - **DCC++ Ethernet** (`dccpp-ethernet`) - Network connection - Untested
