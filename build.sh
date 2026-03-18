@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build script for dcc-io-daemon
+# Build script for panelsdcc-connect
 # Uses pre-built jmri.jar if available, otherwise builds from source
 
 set -e
@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 JMRI_PREBUILT="${JMRI_HOME:-$(dirname "$0")/../JMRI}"
 JMRI_SOURCE="${JMRI_HOME:-$(dirname "$0")/../JMRI-5.12}"
 
-echo "Building dcc-io-daemon..."
+echo "Building panelsdcc-connect..."
 
 # Check for pre-built jmri.jar first
 if [ -f "$JMRI_PREBUILT/jmri.jar" ]; then
@@ -55,8 +55,8 @@ fi
 
 echo ""
 echo "Build complete! Run with:"
-echo "  java -jar target/dcc-io-daemon-0.1.0-SNAPSHOT-jar-with-dependencies.jar [port]"
+echo "  java -jar target/panelsdcc-connect-0.1.0-SNAPSHOT-jar-with-dependencies.jar [port]"
 echo ""
 echo "Note: If using system scope, you may need to add JMRI to classpath:"
-echo "  java -cp \"target/dcc-io-daemon-0.1.0-SNAPSHOT-jar-with-dependencies.jar:$JMRI_PREBUILT/jmri.jar:$JMRI_PREBUILT/lib/*\" org.dccio.daemon.DccIoDaemon [port]"
+echo "  java -cp \"target/panelsdcc-connect-0.1.0-SNAPSHOT-jar-with-dependencies.jar:$JMRI_PREBUILT/jmri.jar:$JMRI_PREBUILT/lib/*\" cc.panelsd.connect.daemon.DccIoDaemon [port]"
 

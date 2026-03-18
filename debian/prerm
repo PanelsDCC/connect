@@ -1,17 +1,17 @@
 #!/bin/bash
 set -e
 
-# Pre-removal script for dcc-io-daemon
+# Pre-removal script for panelsdcc-connect
 
 # Stop and disable the service before removal
-if systemctl is-active dcc-io-daemon >/dev/null 2>&1; then
-    echo "Stopping dcc-io-daemon service..."
-    systemctl stop dcc-io-daemon
+if systemctl is-active panelsdcc-connect >/dev/null 2>&1; then
+    echo "Stopping panelsdcc-connect service..."
+    systemctl stop panelsdcc-connect
 fi
 
-if systemctl is-enabled dcc-io-daemon >/dev/null 2>&1; then
-    echo "Disabling dcc-io-daemon service..."
-    systemctl disable dcc-io-daemon
+if systemctl is-enabled panelsdcc-connect >/dev/null 2>&1; then
+    echo "Disabling panelsdcc-connect service..."
+    systemctl disable panelsdcc-connect
 fi
 
 # DEBHELPER

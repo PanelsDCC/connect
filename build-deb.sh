@@ -1,12 +1,12 @@
 #!/bin/bash
-# Build Debian package for dcc-io-daemon
+# Build Debian package for panelsdcc-connect
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "Building Debian package for dcc-io-daemon..."
+echo "Building Debian package for panelsdcc-connect..."
 
 # Check for required tools
 for cmd in dpkg-buildpackage mvn; do
@@ -78,7 +78,7 @@ echo ""
 echo "Build complete!"
 echo ""
 echo "To install the package:"
-echo "  sudo dpkg -i ../dcc-io-daemon_${DEBIAN_FULL_VERSION}_all.deb"
+echo "  sudo dpkg -i ../panelsdcc-connect_${DEBIAN_FULL_VERSION}_all.deb"
 echo ""
 echo "After installation, install JMRI with:"
 echo "  sudo jmri-install"

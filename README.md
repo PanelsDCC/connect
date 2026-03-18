@@ -97,7 +97,7 @@ java -jar target/dcc-io-daemon-0.1.0-SNAPSHOT-jar-with-dependencies.jar [port]
 If using system scope for JMRI, you may need to add JMRI to the classpath:
 
 ```bash
-java -cp "target/dcc-io-daemon-0.1.0-SNAPSHOT-jar-with-dependencies.jar:../JMRI/jmri.jar:../JMRI/lib/*" org.dccio.daemon.DccIoDaemon [port]
+java -cp "target/dcc-io-daemon-0.1.0-SNAPSHOT-jar-with-dependencies.jar:../JMRI/jmri.jar:../JMRI/lib/*" cc.panelsd.connect.daemon.DccIoDaemon [port]
 ```
 
 ## Web UI

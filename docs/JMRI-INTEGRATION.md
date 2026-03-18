@@ -81,7 +81,7 @@ See [../XNET_ELITE_IMPLEMENTATION.md](../XNET_ELITE_IMPLEMENTATION.md) for the o
 - **Connections:** `NceSerialConnection` and `NceUsbConnection` use `SerialDriverAdapter` / `UsbDriverAdapter`, `NceSystemConnectionMemo`, and `NceTrafficController`.
 - **Throttle speed/direction:** `DirectNceThrottleSession` uses `NceBinaryCommand.nceLocoCmd(locoAddr, LOCO_CMD_FWD_128SPEED/REV_128SPEED, value)` and `NceMessage.createBinaryMessage(tc, bl)`, then `trafficController.sendNceMessage(m, null)`. Loco address: DCC number + `0xC000` for long. Functions use the JMRI throttle.
 - **Accessories:** `DirectNceAccessoryController` uses `NceBinaryCommand.accDecoder(address, closed)` when binary is supported (OPTION_2006 or USB), else `NmraPacket.accDecoderPkt(address, closed)` and `NceMessage.sendPacketMessage(tc, bl)`.
-- **Files:** `org.dccio.core.impl.nce.DirectNceThrottleSession`, `DirectNceAccessoryController`; both `NceSerialConnection` and `NceUsbConnection` create and return them.
+- **Files:** `cc.panelsd.connect.core.impl.nce.DirectNceThrottleSession`, `DirectNceAccessoryController`; both `NceSerialConnection` and `NceUsbConnection` create and return them.
 
 ---
 
@@ -102,4 +102,4 @@ See [../XNET_ELITE_IMPLEMENTATION.md](../XNET_ELITE_IMPLEMENTATION.md) for the o
 
 - JMRI jmrix source: e.g. `JMRI-5.13.6/java/src/jmri/jmrix/` (lenz, dccpp, nce, …).
 - XNet example: `jmri.jmrix.lenz.XNetMessage` (e.g. `getTurnoutCommandMsg`, `getSpeedAndDirectionMsg`), `XNetTrafficController.sendXNetMessage`.
-- Daemon interfaces: `org.dccio.core.AccessoryController`, `org.dccio.core.ThrottleSession`, `org.dccio.core.CommandStationConnection`.
+- Daemon interfaces: `cc.panelsd.connect.core.AccessoryController`, `cc.panelsd.connect.core.ThrottleSession`, `cc.panelsd.connect.core.CommandStationConnection`.

@@ -1,6 +1,6 @@
 # Installation Guide for Raspberry Pi
 
-This guide covers installing dcc-io-daemon on a Raspberry Pi for headless operation.
+This guide covers installing panelsDCC-connect on a Raspberry Pi for headless operation.
 
 ## Hardware Requirements
 
@@ -61,26 +61,26 @@ sudo reboot
 
 After reboot, reconnect via SSH.
 
-## Installing dcc-io-daemon
+## Installing panelsDCC-connect
 
 ### Download the Package
 
-1. **Download the latest `.deb` package** from the [GitHub Releases](https://github.com/davetaz/dcc-io-daemon/releases) page
+1. **Download the latest `.deb` package** from the [GitHub Releases](https://github.com/PanelsDCC/connect/releases) page
 
 2. **Transfer to your Raspberry Pi**:
    - Option A: Download directly on the Pi:
      ```bash
-     wget https://github.com/davetaz/dcc-io-daemon/releases/download/vX.X.X/dcc-io-daemon_X.X.X-X_all.deb
+    wget https://github.com/PanelsDCC/connect/releases/download/vX.X.X/panelsdcc-connect_X.X.X-X_all.deb
      ```
    - Option B: Download on your computer and transfer via SCP:
      ```bash
-     scp dcc-io-daemon_X.X.X-X_all.deb pi@<pi-ip-address>:~/
+    scp panelsdcc-connect_X.X.X-X_all.deb pi@<pi-ip-address>:~/
      ```
 
 ### Install the Package
 
 ```bash
-sudo apt install ./dcc-io-daemon_X.X.X-X_all.deb
+sudo apt install ./panelsdcc-connect_X.X.X-X_all.deb
 ```
 
 Replace `X.X.X-X` with the actual version number of the downloaded package.
@@ -99,14 +99,14 @@ During package installation, the post-installation script will automatically:
 
 1. **Check if JMRI is installed**
 2. **If JMRI is not found**, automatically install the latest production release using `jmri-install --latest`
-3. **Enable and start the dcc-io-daemon service**
+3. **Enable and start the panelsdcc-connect service**
 
 The automatic JMRI installation will:
 - Download the latest production release from GitHub
 - Extract it to `/opt/jmri`
 - Create a symlink at `/opt/jmri/current`
 - Set appropriate permissions
-- Restart the dcc-io-daemon service if it's running
+- Restart the panelsdcc-connect service if it's running
 
 **Note**: The automatic installation may take a few minutes depending on your internet connection speed, as it needs to download the JMRI release (typically 200-300MB).
 
@@ -135,7 +135,7 @@ sudo jmri-install --latest
 ### Check Service Status
 
 ```bash
-sudo systemctl status dcc-io-daemon
+sudo systemctl status panelsdcc-connect
 ```
 
 The service should be running and enabled (will start on boot).
@@ -156,7 +156,7 @@ Open a web browser and navigate to:
 http://<pi-ip-address>:9000
 ```
 
-You should see the dcc-io-daemon web interface where you can:
+You should see the panelsdcc-connect web interface where you can:
 - Auto-discover connected controllers
 - Configure controller connections
 - Test throttles and accessories
@@ -168,36 +168,36 @@ You should see the dcc-io-daemon web interface where you can:
 
 ```bash
 # Start the service
-sudo systemctl start dcc-io-daemon
+sudo systemctl start panelsdcc-connect
 
 # Stop the service
-sudo systemctl stop dcc-io-daemon
+sudo systemctl stop panelsdcc-connect
 
 # Restart the service
-sudo systemctl restart dcc-io-daemon
+sudo systemctl restart panelsdcc-connect
 ```
 
 ### Enable/Disable Auto-Start
 
 ```bash
 # Enable service to start on boot
-sudo systemctl enable dcc-io-daemon
+sudo systemctl enable panelsdcc-connect
 
 # Disable auto-start
-sudo systemctl disable dcc-io-daemon
+sudo systemctl disable panelsdcc-connect
 ```
 
 ### View Logs
 
 ```bash
 # View recent logs
-sudo journalctl -u dcc-io-daemon -n 50
+sudo journalctl -u panelsdcc-connect -n 50
 
 # Follow logs in real-time
-sudo journalctl -u dcc-io-daemon -f
+sudo journalctl -u panelsdcc-connect -f
 
 # View logs since boot
-sudo journalctl -u dcc-io-daemon -b
+sudo journalctl -u panelsdcc-connect -b
 ```
 
 ## Updating JMRI
@@ -219,7 +219,7 @@ to automatically install the latest production release.
 After updating JMRI, restart the service:
 
 ```bash
-sudo systemctl restart dcc-io-daemon
+sudo systemctl restart panelsdcc-connect
 ```
 
 ## Troubleshooting
@@ -228,12 +228,12 @@ sudo systemctl restart dcc-io-daemon
 
 1. Check the service status:
    ```bash
-   sudo systemctl status dcc-io-daemon
+   sudo systemctl status panelsdcc-connect
    ```
 
 2. View error logs:
    ```bash
-   sudo journalctl -u dcc-io-daemon -n 100
+   sudo journalctl -u panelsdcc-connect -n 100
    ```
 
 3. Verify JMRI is installed:
@@ -270,7 +270,7 @@ If you can't access the web interface:
 
 1. Check the service is running:
    ```bash
-   sudo systemctl status dcc-io-daemon
+   sudo systemctl status panelsdcc-connect
    ```
 
 2. Verify the port is listening:

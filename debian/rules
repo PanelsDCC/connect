@@ -26,9 +26,9 @@ override_dh_auto_build:
 
 override_dh_auto_install:
 	# Install the JAR file to debian/tmp (where dh_install expects it)
-	mkdir -p debian/tmp/usr/lib/dcc-io-daemon
+	mkdir -p debian/tmp/usr/lib/panelsdcc-connect
 	cp target/$(JAR_FILENAME) \
-	   debian/tmp/usr/lib/dcc-io-daemon/ || \
+	   debian/tmp/usr/lib/panelsdcc-connect/ || \
 	   echo "Warning: JAR file not found. Package may be incomplete."
 	
 	# Install JMRI installation script
@@ -38,14 +38,14 @@ override_dh_auto_install:
 	
 	# Install systemd service file (with version substitution)
 	mkdir -p debian/tmp/lib/systemd/system
-	test -f debian/dcc-io-daemon.service || (echo "ERROR: debian/dcc-io-daemon.service not found" >&2; exit 1)
+	test -f debian/panelsdcc-connect.service || (echo "ERROR: debian/panelsdcc-connect.service not found" >&2; exit 1)
 	# Get JAR filename and replace placeholder
 	JAR_FILE=$$(cd $$(pwd) && bash version.sh jar-filename); \
 	echo "Replacing JAR_FILENAME_PLACEHOLDER with: $$JAR_FILE"; \
 	sed "s|JAR_FILENAME_PLACEHOLDER|$$JAR_FILE|g" \
-		debian/dcc-io-daemon.service > debian/tmp/lib/systemd/system/dcc-io-daemon.service; \
+		debian/panelsdcc-connect.service > debian/tmp/lib/systemd/system/panelsdcc-connect.service; \
 	echo "Verifying replacement:"; \
-	grep -q "JAR_FILENAME_PLACEHOLDER" debian/tmp/lib/systemd/system/dcc-io-daemon.service && \
+	grep -q "JAR_FILENAME_PLACEHOLDER" debian/tmp/lib/systemd/system/panelsdcc-connect.service && \
 		echo "WARNING: Placeholder still found in service file!" || \
 		echo "Placeholder successfully replaced"
 

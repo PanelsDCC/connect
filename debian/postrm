@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# Post-removal script for dcc-io-daemon
+# Post-removal script for panelsdcc-connect
 
 # Reload systemd after service file removal
 if [ "$1" = "purge" ]; then
@@ -22,18 +22,18 @@ if [ "$1" = "purge" ]; then
     fi
     
     # Clean up working directory if empty
-    if [ -d /var/lib/dcc-io-daemon ]; then
-        if [ -z "$(ls -A /var/lib/dcc-io-daemon)" ]; then
+    if [ -d /var/lib/panelsdcc-connect ]; then
+        if [ -z "$(ls -A /var/lib/panelsdcc-connect)" ]; then
             echo "Removing empty working directory..."
-            rmdir /var/lib/dcc-io-daemon
+            rmdir /var/lib/panelsdcc-connect
         fi
     fi
     
     # Remove config directory if empty
-    if [ -d /etc/dcc-io-daemon ]; then
-        if [ -z "$(ls -A /etc/dcc-io-daemon)" ]; then
+    if [ -d /etc/panelsdcc-connect ]; then
+        if [ -z "$(ls -A /etc/panelsdcc-connect)" ]; then
             echo "Removing empty config directory..."
-            rmdir /etc/dcc-io-daemon
+            rmdir /etc/panelsdcc-connect
         fi
     fi
 fi

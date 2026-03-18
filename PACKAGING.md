@@ -1,6 +1,6 @@
 # Debian Package Building Guide
 
-This document describes how to build and install the dcc-io-daemon Debian package.
+This document describes how to build and install the panelsdcc-connect Debian package.
 
 ## Prerequisites
 
@@ -34,12 +34,12 @@ mvn clean package -DskipTests
 dpkg-buildpackage -us -uc -b
 ```
 
-The package will be created in the parent directory as `dcc-io-daemon_0.1.0-1_all.deb`.
+The package will be created in the parent directory as `panelsdcc-connect_0.1.0-1_all.deb`.
 
 ## Installing the Package
 
 ```bash
-sudo dpkg -i ../dcc-io-daemon_0.1.0-1_all.deb
+sudo dpkg -i ../panelsdcc-connect_0.1.0-1_all.deb
 ```
 
 If there are missing dependencies, install them with:
@@ -62,7 +62,7 @@ This script will:
 3. Allow you to select which version to install
 4. Download and extract JMRI to `/opt/jmri`
 5. Create a symlink at `/opt/jmri/current`
-6. Optionally restart the dcc-io-daemon service
+6. Optionally restart the panelsdcc-connect service
 
 ## Service Management
 
@@ -70,16 +70,16 @@ Once JMRI is installed, the service can be managed with systemd:
 
 ```bash
 # Start the service
-sudo systemctl start dcc-io-daemon
+sudo systemctl start panelsdcc-connect
 
 # Stop the service
-sudo systemctl stop dcc-io-daemon
+sudo systemctl stop panelsdcc-connect
 
 # Check status
-sudo systemctl status dcc-io-daemon
+sudo systemctl status panelsdcc-connect
 
 # View logs
-sudo journalctl -u dcc-io-daemon -f
+sudo journalctl -u panelsdcc-connect -f
 ```
 
 The service will automatically start on boot if enabled.
@@ -88,11 +88,11 @@ The service will automatically start on boot if enabled.
 
 The Debian package installs:
 
-- `/usr/lib/dcc-io-daemon/` - Main JAR file
+- `/usr/lib/panelsdcc-connect/` - Main JAR file
 - `/usr/local/bin/jmri-install` - JMRI installation script
-- `/lib/systemd/system/dcc-io-daemon.service` - Systemd service file
-- `/var/lib/dcc-io-daemon/` - Working directory (created on install)
-- `/etc/dcc-io-daemon/` - Configuration directory (created on install)
+- `/lib/systemd/system/panelsdcc-connect.service` - Systemd service file
+- `/var/lib/panelsdcc-connect/` - Working directory (created on install)
+- `/etc/panelsdcc-connect/` - Configuration directory (created on install)
 
 JMRI is installed separately to `/opt/jmri/` via the `jmri-install` script.
 
@@ -100,10 +100,10 @@ JMRI is installed separately to `/opt/jmri/` via the `jmri-install` script.
 
 ```bash
 # Remove the package (keeps configuration)
-sudo apt-get remove dcc-io-daemon
+sudo apt-get remove panelsdcc-connect
 
 # Purge the package (removes configuration)
-sudo apt-get purge dcc-io-daemon
+sudo apt-get purge panelsdcc-connect
 ```
 
 During purge, you'll be prompted whether to remove JMRI as well.
@@ -114,27 +114,27 @@ During purge, you'll be prompted whether to remove JMRI as well.
 
 1. Check service status:
    ```bash
-   sudo systemctl status dcc-io-daemon
+   sudo systemctl status panelsdcc-connect
    ```
 
 2. View recent logs (last 50 lines):
    ```bash
-   sudo journalctl -u dcc-io-daemon -n 50
+   sudo journalctl -u panelsdcc-connect -n 50
    ```
 
 3. View logs in real-time (follow mode):
    ```bash
-   sudo journalctl -u dcc-io-daemon -f
+   sudo journalctl -u panelsdcc-connect -f
    ```
 
 4. View all logs since boot:
    ```bash
-   sudo journalctl -u dcc-io-daemon -b
+   sudo journalctl -u panelsdcc-connect -b
    ```
 
 5. View logs with timestamps:
    ```bash
-   sudo journalctl -u dcc-io-daemon --since "1 hour ago"
+   sudo journalctl -u panelsdcc-connect --since "1 hour ago"
    ```
 
 6. Check if JMRI is installed:
@@ -149,12 +149,12 @@ During purge, you'll be prompted whether to remove JMRI as well.
 
 8. Check if the JAR file exists:
    ```bash
-   ls -la /usr/lib/dcc-io-daemon/
+   ls -la /usr/lib/panelsdcc-connect/
    ```
 
 9. Test the service manually (as the dcc-io user):
    ```bash
-   sudo -u dcc-io java -cp "/usr/lib/dcc-io-daemon/dcc-io-daemon-*-jar-with-dependencies.jar:/opt/jmri/current/jmri.jar:/opt/jmri/current/lib/*" org.dccio.daemon.DccIoDaemon 9000
+   sudo -u dcc-io java -cp "/usr/lib/panelsdcc-connect/panelsdcc-connect-*-jar-with-dependencies.jar:/opt/jmri/current/jmri.jar:/opt/jmri/current/lib/*" cc.panelsd.connect.daemon.DccIoDaemon 9000
    ```
 
 ### JMRI installation fails

@@ -1,12 +1,12 @@
 #!/bin/bash
 set -e
 
-# Post-installation script for dcc-io-daemon
+# Post-installation script for panelsdcc-connect
 
 # Create dcc-io system user if it doesn't exist
 if ! id -u dcc-io >/dev/null 2>&1; then
     echo "Creating dcc-io system user..."
-    useradd -r -s /bin/false -d /var/lib/dcc-io-daemon -c "DCC IO Daemon" dcc-io
+    useradd -r -s /bin/false -d /var/lib/panelsdcc-connect -c "DCC IO Daemon" dcc-io
 fi
 
 # Add dcc-io user to groups needed for hardware access
@@ -26,14 +26,14 @@ for group in dialout plugdev gpio i2c spi input; do
 done
 
 # Create working directory
-mkdir -p /var/lib/dcc-io-daemon
-chown dcc-io:dcc-io /var/lib/dcc-io-daemon
-chmod 755 /var/lib/dcc-io-daemon
+mkdir -p /var/lib/panelsdcc-connect
+chown dcc-io:dcc-io /var/lib/panelsdcc-connect
+chmod 755 /var/lib/panelsdcc-connect
 
 # Create config directory
-mkdir -p /etc/dcc-io-daemon
-chown root:root /etc/dcc-io-daemon
-chmod 755 /etc/dcc-io-daemon
+mkdir -p /etc/panelsdcc-connect
+chown root:root /etc/panelsdcc-connect
+chmod 755 /etc/panelsdcc-connect
 
 # Reload systemd to pick up new service file
 systemctl daemon-reload
@@ -59,17 +59,17 @@ if [ ! -L /opt/jmri/current ] && [ ! -d /opt/jmri/current ]; then
 fi
 
 # Enable and start the service if JMRI is available
-if systemctl is-enabled dcc-io-daemon >/dev/null 2>&1; then
+if systemctl is-enabled panelsdcc-connect >/dev/null 2>&1; then
     echo "Service already enabled."
 else
-    systemctl enable dcc-io-daemon
+    systemctl enable panelsdcc-connect
 fi
 
-if systemctl is-active dcc-io-daemon >/dev/null 2>&1; then
+if systemctl is-active panelsdcc-connect >/dev/null 2>&1; then
     echo "Service already running."
 else
-    echo "Starting dcc-io-daemon service..."
-    systemctl start dcc-io-daemon || echo "Failed to start service. Check logs with: journalctl -u dcc-io-daemon"
+    echo "Starting panelsdcc-connect service..."
+    systemctl start panelsdcc-connect || echo "Failed to start service. Check logs with: journalctl -u panelsdcc-connect"
 fi
 
 # DEBHELPER

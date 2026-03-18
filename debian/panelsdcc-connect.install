@@ -1,0 +1,4 @@
+usr/lib/panelsdcc-connect/*.jar usr/lib/panelsdcc-connect/
+usr/local/bin/jmri-install usr/local/bin/
+lib/systemd/system/panelsdcc-connect.service lib/systemd/system/
+

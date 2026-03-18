@@ -1,12 +1,12 @@
-Source: dcc-io-daemon
+Source: panelsdcc-connect
 Section: electronics
 Priority: optional
 Maintainer: DCC IO Daemon Maintainer <maintainer@example.com>
 Build-Depends: debhelper (>= 13), default-jdk (>= 11), maven
 Standards-Version: 4.6.0
-Homepage: https://github.com/yourusername/dcc-io-daemon
+Homepage: https://github.com/PanelsDCC/connect
 
-Package: dcc-io-daemon
+Package: panelsdcc-connect
 Architecture: all
 Depends: ${misc:Depends}, default-jre-headless (>= 11), curl, jq, tar, gzip
 Description: DCC IO Daemon - RESTful API for DCC command stations

@@ -1,4 +1,0 @@
-usr/lib/dcc-io-daemon/*.jar usr/lib/dcc-io-daemon/
-usr/local/bin/jmri-install usr/local/bin/
-lib/systemd/system/dcc-io-daemon.service lib/systemd/system/
-

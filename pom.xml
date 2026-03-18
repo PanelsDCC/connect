@@ -4,8 +4,8 @@
                              https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>org.dccio</groupId>
-  <artifactId>dcc-io-daemon</artifactId>
+  <groupId>cc.panelsd.connect</groupId>
+  <artifactId>panelsDCC-connect</artifactId>
   <version>0.3.0</version>
 
   <properties>
@@ -130,7 +130,7 @@
           </descriptorRefs>
           <archive>
             <manifest>
-              <mainClass>org.dccio.daemon.DccIoDaemon</mainClass>
+              <mainClass>cc.panelsd.connect.daemon.DccIoDaemon</mainClass>
             </manifest>
           </archive>
         </configuration>
