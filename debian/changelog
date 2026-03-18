@@ -2,35 +2,35 @@ panelsdcc-connect (0.3.0-1) unstable; urgency=medium
 
   * Version 0.3.0
 
- -- DCC IO Daemon Maintainer <maintainer@example.com>  Wed, 11 Feb 2026 17:20:36 -0500
+ -- panelsDCC-connect Maintainer <maintainer@example.com>  Wed, 11 Feb 2026 17:20:36 -0500
 
 
 panelsdcc-connect (0.2.3-1) unstable; urgency=medium
 
   * Version 0.2.3
 
- -- DCC IO Daemon Maintainer <maintainer@example.com>  Fri, 23 Jan 2026 10:25:35 -0500
+ -- panelsDCC-connect Maintainer <maintainer@example.com>  Fri, 23 Jan 2026 10:25:35 -0500
 
 
 panelsdcc-connect (0.2.2-1) unstable; urgency=medium
 
   * Version 0.2.2
 
- -- DCC IO Daemon Maintainer <maintainer@example.com>  Fri, 23 Jan 2026 07:11:44 -0500
+ -- panelsDCC-connect Maintainer <maintainer@example.com>  Fri, 23 Jan 2026 07:11:44 -0500
 
 
 panelsdcc-connect (0.2.1-1) unstable; urgency=medium
 
   * Version 0.2.1
 
- -- DCC IO Daemon Maintainer <maintainer@example.com>  Fri, 23 Jan 2026 04:57:11 -0500
+ -- panelsDCC-connect Maintainer <maintainer@example.com>  Fri, 23 Jan 2026 04:57:11 -0500
 
 
 panelsdcc-connect (0.2.0-1) unstable; urgency=medium
 
   * Version 0.2.0
 
- -- DCC IO Daemon Maintainer <maintainer@example.com>  Mon, 29 Dec 2025 04:20:12 -0500
+ -- panelsDCC-connect Maintainer <maintainer@example.com>  Mon, 29 Dec 2025 04:20:12 -0500
 
 
 panelsdcc-connect (0.1.0-1) unstable; urgency=medium
@@ -39,5 +39,5 @@ panelsdcc-connect (0.1.0-1) unstable; urgency=medium
   * Includes systemd service integration
   * JMRI installation script provided separately
 
- -- DCC IO Daemon Maintainer <maintainer@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
+ -- panelsDCC-connect Maintainer <maintainer@example.com>  Mon, 01 Jan 2024 12:00:00 +0000
 

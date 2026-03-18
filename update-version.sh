@@ -62,7 +62,7 @@ if [ -f "$CHANGELOG_FILE" ]; then
         echo ""
         echo "  * Version ${NEW_VERSION}"
         echo ""
-        echo " -- DCC IO Daemon Maintainer <maintainer@example.com>  ${DATE}"
+        echo " -- panelsDCC-connect Maintainer <maintainer@example.com>  ${DATE}"
         echo ""
         echo ""
         cat "$CHANGELOG_FILE"

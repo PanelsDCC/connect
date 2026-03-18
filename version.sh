@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version management script for dcc-io-daemon
+# Version management script for panelsDCC-connect
 # Extracts version from pom.xml and provides it in various formats
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -22,9 +22,9 @@ fi
 DEBIAN_VERSION=$(echo "$MAVEN_VERSION" | sed 's/-SNAPSHOT//')
 DEBIAN_FULL_VERSION="${DEBIAN_VERSION}-1"
 
-# JAR filename (Maven creates this with SNAPSHOT)
-JAR_VERSION="$MAVEN_VERSION"
-JAR_FILENAME="dcc-io-daemon-${JAR_VERSION}-jar-with-dependencies.jar"
+# JAR filename (matches Maven assembly output)
+JAR_VERSION="$DEBIAN_VERSION"
+JAR_FILENAME="panelsDCC-connect-${JAR_VERSION}-jar-with-dependencies.jar"
 
 # Export variables for use in other scripts
 export MAVEN_VERSION

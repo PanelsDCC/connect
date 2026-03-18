@@ -1,4 +1,4 @@
-# DCC IO Daemon
+# panelsDCC-connect
 
 A standalone Java daemon that provides a simple, clean API for controlling DCC command stations by leveraging JMRI's rich controller support without the complexity of JMRI's full object model and data structures.
 
@@ -6,11 +6,11 @@ A standalone Java daemon that provides a simple, clean API for controlling DCC c
 
 This project is licensed under the GNU General Public License version 2 (GPL v2). See [LICENSE.txt](LICENSE.txt) for details.
 
-This license is compatible with JMRI (which also uses GPL v2), allowing dcc-io-daemon to link with JMRI's libraries.
+This license is compatible with JMRI (which also uses GPL v2), allowing panelsDCC-connect to link with JMRI's libraries.
 
 ## Acknowledgments
 
-DCC IO Daemon uses [JMRI](https://www.jmri.org/) (Java Model Railroad Interface) for controller communication. JMRI is free software licensed under GPL v2, developed by the JMRI community. See [LICENSE.txt](LICENSE.txt) for full acknowledgment details.
+panelsDCC-connect uses [JMRI](https://www.jmri.org/) (Java Model Railroad Interface) for controller communication. JMRI is free software licensed under GPL v2, developed by the JMRI community. See [LICENSE.txt](LICENSE.txt) for full acknowledgment details.
 
 ## Philosophy
 
@@ -55,7 +55,7 @@ Perfect for headless deployments on Raspberry Pi or other embedded systems where
 If you have a pre-built `jmri.jar`:
 
 ```bash
-cd dcc-io-daemon
+cd panelsDCC-connect
 mvn clean package
 ```
 
@@ -70,7 +70,7 @@ cd ../JMRI-5.13.6
 ant
 jar -cf jmri.jar -C java/build/classes .
 mvn install:install-file -Dfile=jmri.jar -DgroupId=org.jmri -DartifactId=jmri -Dversion=5.13.6 -Dpackaging=jar
-cd ../dcc-io-daemon
+cd ../panelsDCC-connect
 mvn clean package
 ```
 
@@ -86,18 +86,7 @@ The provided build scripts automatically detect and use pre-built JAR or build f
 ### Basic Usage
 
 ```bash
-java -jar target/dcc-io-daemon-0.1.0-SNAPSHOT-jar-with-dependencies.jar [port]
-```
-
-- If `port` is omitted, the daemon listens on port `9000` by default
-- The web UI will be available at `http://localhost:9000/`
-
-### With System-Scope JMRI
-
-If using system scope for JMRI, you may need to add JMRI to the classpath:
-
-```bash
-java -cp "target/dcc-io-daemon-0.1.0-SNAPSHOT-jar-with-dependencies.jar:../JMRI/jmri.jar:../JMRI/lib/*" cc.panelsd.connect.daemon.DccIoDaemon [port]
+java -cp "target/panelsDCC-connect-0.3.0-jar-with-dependencies.jar:../JMRI/jmri.jar:../JMRI/lib/*" cc.panelsd.connect.daemon.DccIoDaemon [port]
 ```
 
 ## Web UI
@@ -630,12 +619,11 @@ Uses JDK's built-in `HttpServer` for minimal dependencies. Web UI is served from
 ### Project Structure
 
 ```
-dcc-io-daemon/
-├── src/main/java/org/dccio/
-│   ├── core/              # Core interfaces and services
-│   │   ├── impl/          # Implementation classes
-│   │   └── events/        # Event system
-│   └── daemon/            # HTTP server and web UI
+panelsDCC-connect/
+├── src/main/java/cc/panelsd/connect/core/              # Core interfaces and services
+│   ├── impl/          # Implementation classes
+│   └── events/        # Event system
+└── src/main/java/cc/panelsd/connect/daemon/            # HTTP server and web UI
 ├── src/main/resources/
 │   ├── web/               # Web UI files
 │   │   ├── index.html

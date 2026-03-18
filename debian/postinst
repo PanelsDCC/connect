@@ -6,7 +6,7 @@ set -e
 # Create dcc-io system user if it doesn't exist
 if ! id -u dcc-io >/dev/null 2>&1; then
     echo "Creating dcc-io system user..."
-    useradd -r -s /bin/false -d /var/lib/panelsdcc-connect -c "DCC IO Daemon" dcc-io
+useradd -r -s /bin/false -d /var/lib/panelsdcc-connect -c "panelsDCC-connect daemon user" dcc-io
 fi
 
 # Add dcc-io user to groups needed for hardware access

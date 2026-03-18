@@ -1,5 +1,5 @@
 [Unit]
-Description=DCC IO Daemon - RESTful API for DCC command stations
+Description=panelsDCC-connect - RESTful API for DCC command stations
 After=network.target
 
 [Service]

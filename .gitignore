@@ -117,4 +117,6 @@ debian/debhelper-build-stamp
 debian/*.substvars
 debian/*.debhelper
 debian/dcc-io-daemon/
+debian/panelsdcc-connect/
+debian/files
 debian/tmp/
