@@ -909,10 +909,21 @@ function loadExampleMessage() {
 
 let updatePollInterval = null;
 
+/** Parse JSON from fetch; if body is not valid JSON, surface the raw text (avoids cryptic JSON.parse errors). */
+async function readJsonOrError(res) {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    const snippet = text.length > 400 ? text.slice(0, 400) + '…' : text;
+    throw new Error(snippet || res.statusText || 'Invalid JSON response');
+  }
+}
+
 async function loadUpdateStatus() {
   try {
     const res = await fetch('/api/update');
-    const data = await res.json();
+    const data = await readJsonOrError(res);
     const installed = document.getElementById('installedVersion');
     const statusEl = document.getElementById('updateState');
     const msgEl = document.getElementById('updateMessage');
@@ -952,7 +963,7 @@ async function checkForUpdates() {
   if (btn) btn.disabled = true;
   try {
     const res = await fetch('/api/update/check', { method: 'POST' });
-    const data = await res.json();
+    const data = await readJsonOrError(res);
     if (!res.ok) {
       throw new Error(data.error || res.statusText);
     }
@@ -974,12 +985,16 @@ async function installUpdate() {
   if (btn) btn.disabled = true;
   try {
     const res = await fetch('/api/update/install', { method: 'POST' });
-    const data = await res.json();
+    const data = await readJsonOrError(res);
     if (!res.ok) {
       throw new Error(data.error || res.statusText);
     }
     await loadUpdateStatus();
-    showStatus('Update finished.', 'success');
+    if (res.status === 202) {
+      showStatus(data.message || 'Install started. Watch status below; the page may reconnect when the service restarts.', 'success');
+    } else {
+      showStatus('Update finished.', 'success');
+    }
   } catch (e) {
     showStatus('Update failed: ' + e.message, 'error');
   } finally {

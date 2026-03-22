@@ -9,6 +9,9 @@ import cc.panelsd.connect.core.SystemConfig;
 import cc.panelsd.connect.core.impl.DccIoServiceImpl;
 import cc.panelsd.connect.updater.ConnectUpdater;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -31,7 +34,7 @@ import java.util.StringJoiner;
  *   <li>POST /connections/create - create a connection with query params</li>
  *   <li>GET /api/update - update status JSON (from update-status.json)</li>
  *   <li>POST /api/update/check - refresh status from GitHub</li>
- *   <li>POST /api/update/install - install latest .deb (requires sudo; see sudoers)</li>
+ *   <li>POST /api/update/install - queue install (requires sudo; see sudoers); returns 202</li>
  * </ul>
  */
 final class DccIoHttpServer {
@@ -74,23 +77,19 @@ final class DccIoHttpServer {
     }
 
     /**
-     * Runs the packaged updater script. When the daemon runs as {@code dcc-io}, install uses
-     * {@code sudo -n} (requires {@code /etc/sudoers.d/panelsdcc-connect-updater}).
+     * Queues the packaged updater via {@code install --background} (transient systemd unit).
+     * We do not use {@code systemd-run --wait} from the daemon: when {@code dpkg} restarts
+     * this service, systemd SIGTERM's the waiter (exit 143) even if the install succeeds.
+     * When the daemon runs as {@code dcc-io}, uses {@code sudo -n} (see sudoers).
      */
     private static void runPanelsdccUpdaterInstall() throws IOException, InterruptedException {
         String script = "/usr/local/bin/panelsdcc-connect-updater";
+        ProcessBuilder pb;
         if ("root".equals(System.getProperty("user.name"))) {
-            ProcessBuilder pb = new ProcessBuilder(script, "install");
-            pb.redirectErrorStream(true);
-            Process p = pb.start();
-            String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            int code = p.waitFor();
-            if (code != 0) {
-                throw new IOException("install failed (exit " + code + "): " + out.trim());
-            }
-            return;
+            pb = new ProcessBuilder(script, "install", "--background");
+        } else {
+            pb = new ProcessBuilder("sudo", "-n", script, "install", "--background");
         }
-        ProcessBuilder pb = new ProcessBuilder("sudo", "-n", script, "install");
         pb.redirectErrorStream(true);
         Process p = pb.start();
         String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
@@ -98,7 +97,7 @@ final class DccIoHttpServer {
         if (code != 0) {
             throw new IOException("install failed (exit " + code + "): " + out.trim()
                     + ". Ensure /etc/sudoers.d/panelsdcc-connect-updater allows dcc-io to run "
-                    + script + " install without a password.");
+                    + script + " install --background without a password.");
         }
     }
 
@@ -109,7 +108,11 @@ final class DccIoHttpServer {
             try {
                 handleJson(exchange);
             } catch (Exception e) {
-                sendJson(exchange, 500, "{\"error\":\"" + escape(e.getMessage()) + "\"}");
+                String msg = e.getMessage();
+                if (msg == null || msg.isEmpty()) {
+                    msg = e.toString();
+                }
+                sendJsonError(exchange, 500, msg);
             }
         }
 
@@ -134,6 +137,13 @@ final class DccIoHttpServer {
             try (OutputStream os = exchange.getResponseBody()) {
                 os.write(bytes);
             }
+        }
+
+        /** Error body as JSON; safe for arbitrary text (newlines, quotes) from subprocesses. */
+        protected void sendJsonError(HttpExchange exchange, int status, String message) throws IOException {
+            JsonObject o = new JsonObject();
+            o.addProperty("error", message != null ? message : "Unknown error");
+            sendJson(exchange, status, new Gson().toJson(o));
         }
 
         protected Map<String, String> queryParams(URI uri) {
@@ -257,7 +267,7 @@ final class DccIoHttpServer {
                 conn.requestVersion();
                 sendJson(exchange, 200, "{\"status\":\"ok\",\"message\":\"Version request sent\"}");
             } catch (IOException e) {
-                sendJson(exchange, 500, "{\"error\":\"" + escape(e.getMessage()) + "\"}");
+                sendJsonError(exchange, 500, e.getMessage() != null ? e.getMessage() : e.toString());
             }
         }
     }
@@ -313,7 +323,7 @@ final class DccIoHttpServer {
                 
                 sendJson(exchange, 200, "{\"status\":\"ok\"}");
             } catch (IllegalArgumentException e) {
-                sendJson(exchange, 400, "{\"error\":\"" + escape(e.getMessage()) + "\"}");
+                sendJsonError(exchange, 400, e.getMessage() != null ? e.getMessage() : e.toString());
             }
         }
     }
@@ -385,7 +395,7 @@ final class DccIoHttpServer {
             try {
                 conn.connect();
             } catch (IOException e) {
-                sendJson(exchange, 500, "{\"error\":\"" + escape(e.getMessage()) + "\"}");
+                sendJsonError(exchange, 500, e.getMessage() != null ? e.getMessage() : e.toString());
                 return;
             }
             String body = "{\"id\":\"" + escape(conn.getId()) + "\","
@@ -588,7 +598,11 @@ final class DccIoHttpServer {
                 }
                 try {
                     runPanelsdccUpdaterInstall();
-                    sendJsonRaw(exchange, 200, ConnectUpdater.getStatusJsonString());
+                    JsonObject body = new JsonObject();
+                    body.addProperty("accepted", true);
+                    body.addProperty("message",
+                            "Install started. Poll GET /api/update for progress; the service may restart.");
+                    sendJsonRaw(exchange, 202, new Gson().toJson(body));
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     sendJson(exchange, 500, "{\"error\":\"Interrupted\"}");

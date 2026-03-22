@@ -23,7 +23,9 @@ StandardError=journal
 SyslogIdentifier=panelsdcc-connect
 
 # Security settings
-NoNewPrivileges=true
+# Must be false so the daemon can run `sudo -n ... panelsdcc-connect-updater install` for web UI updates.
+# (NoNewPrivileges=true blocks sudo/setuid and causes: "The no new privileges flag is set".)
+NoNewPrivileges=false
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true

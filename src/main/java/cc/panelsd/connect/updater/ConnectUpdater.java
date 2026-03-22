@@ -107,18 +107,56 @@ public final class ConnectUpdater {
     }
 
     /**
-     * JSON snapshot of {@value #STATE_FILE} for REST/UI, or a minimal object if missing.
+     * JSON snapshot of {@value #STATE_FILE} for REST/UI, merged with the authoritative
+     * installed package version from {@link #getCurrentVersion()} (dpkg or classpath).
+     * <p>
+     * After a manual {@code dpkg -i} upgrade, the file on disk may still list an older
+     * {@code currentVersion}; this method always injects the live installed version and
+     * recomputes {@code hasUpdate} / {@code state} when {@code latestVersion} is present
+     * (unless a check/download/install is in progress).
      */
     public static String getStatusJsonString() {
         JsonObject o = readStateJson();
+        Gson gson = new Gson();
+        String installed = getCurrentVersion();
+
         if (o.size() == 0) {
             JsonObject d = new JsonObject();
             d.addProperty("state", "unknown");
             d.addProperty("message", "No update check has been run yet.");
-            d.addProperty("currentVersion", getCurrentVersion());
-            return new Gson().toJson(d);
+            d.addProperty("currentVersion", installed);
+            return gson.toJson(d);
         }
-        return new Gson().toJson(o);
+
+        o.addProperty("currentVersion", installed);
+
+        String state = "";
+        if (o.has("state") && !o.get("state").isJsonNull()) {
+            state = o.get("state").getAsString();
+        }
+        boolean busy = "checking".equals(state) || "downloading".equals(state) || "installing".equals(state);
+
+        if (!busy && o.has("latestVersion") && !o.get("latestVersion").isJsonNull()) {
+            String latest = o.get("latestVersion").getAsString();
+            boolean hasUpdate = isNewerVersion(latest, installed);
+            o.addProperty("hasUpdate", hasUpdate);
+            if (!hasUpdate) {
+                o.addProperty("state", "up-to-date");
+                o.addProperty("message", "Already running the latest version.");
+                o.add("targetVersion", JsonNull.INSTANCE);
+            } else {
+                if ("up-to-date".equals(state)) {
+                    o.addProperty("state", "update-available");
+                }
+                String msg = o.has("message") && !o.get("message").isJsonNull()
+                        ? o.get("message").getAsString() : "";
+                if (msg.isEmpty() || msg.contains("Already running the latest")) {
+                    o.addProperty("message", "Update available: " + latest);
+                }
+            }
+        }
+
+        return gson.toJson(o);
     }
 
     /** Same as CLI {@code check}: query GitHub and write {@value #STATE_FILE}. */
@@ -295,9 +333,15 @@ public final class ConnectUpdater {
         return v == null ? "" : v.trim().replaceFirst("^v", "");
     }
 
+    /**
+     * GitHub {@code browser_download_url} responses are often {@code 302} to another host
+     * (e.g. {@code objects.githubusercontent.com}). {@link HttpClient.Redirect#NORMAL} does not
+     * follow cross-origin redirects, which breaks downloads with "status 302".
+     */
     private static HttpClient httpClient(Duration timeout) {
         return HttpClient.newBuilder()
                 .connectTimeout(timeout)
+                .followRedirects(HttpClient.Redirect.ALWAYS)
                 .build();
     }
 

@@ -174,7 +174,7 @@ If only one controller is connected, it's automatically assigned both roles. If 
 
 - `GET /api/update` - Current update status (same fields as `/var/lib/panelsdcc-connect/update-status.json`)
 - `POST /api/update/check` - Query GitHub for the latest release and refresh status
-- `POST /api/update/install` - Download and install the latest `.deb` (runs `sudo panelsdcc-connect-updater install`; requires the sudoers rule installed with the package)
+- `POST /api/update/install` - Queue install of the latest `.deb` (runs `sudo panelsdcc-connect-updater install --background`; **202** + poll `GET /api/update`; requires sudoers)
 
 The web UI exposes these as **Check for updates** / **Install update**. See [docs/UPDATER.md](docs/UPDATER.md).
 
