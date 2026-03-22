@@ -907,12 +907,99 @@ function loadExampleMessage() {
   select.value = ''; // Reset dropdown after selection
 }
 
+let updatePollInterval = null;
+
+async function loadUpdateStatus() {
+  try {
+    const res = await fetch('/api/update');
+    const data = await res.json();
+    const installed = document.getElementById('installedVersion');
+    const statusEl = document.getElementById('updateState');
+    const msgEl = document.getElementById('updateMessage');
+    const btnInstall = document.getElementById('btnInstallUpdate');
+    const btnCheck = document.getElementById('btnCheckUpdate');
+    if (installed) {
+      installed.textContent = data.currentVersion != null ? data.currentVersion : '—';
+    }
+    if (statusEl) {
+      statusEl.textContent = data.state != null ? data.state : '—';
+    }
+    if (msgEl) {
+      msgEl.textContent = data.message != null ? data.message : '';
+    }
+    if (btnInstall) {
+      const busy = ['checking', 'downloading', 'installing'].includes(data.state);
+      btnInstall.disabled = !data.hasUpdate || busy;
+    }
+    if (btnCheck) {
+      const busy = ['checking', 'downloading', 'installing'].includes(data.state);
+      btnCheck.disabled = busy;
+    }
+    const busy = ['checking', 'downloading', 'installing'].includes(data.state);
+    if (busy && !updatePollInterval) {
+      updatePollInterval = setInterval(loadUpdateStatus, 2000);
+    } else if (!busy && updatePollInterval) {
+      clearInterval(updatePollInterval);
+      updatePollInterval = null;
+    }
+  } catch (err) {
+    console.error('loadUpdateStatus:', err);
+  }
+}
+
+async function checkForUpdates() {
+  const btn = document.getElementById('btnCheckUpdate');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch('/api/update/check', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || res.statusText);
+    }
+    await loadUpdateStatus();
+  } catch (e) {
+    showStatus('Update check failed: ' + e.message, 'error');
+  } finally {
+    const btn2 = document.getElementById('btnCheckUpdate');
+    if (btn2) btn2.disabled = false;
+    loadUpdateStatus();
+  }
+}
+
+async function installUpdate() {
+  if (!confirm('Install the latest update? The service may restart.')) {
+    return;
+  }
+  const btn = document.getElementById('btnInstallUpdate');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch('/api/update/install', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || res.statusText);
+    }
+    await loadUpdateStatus();
+    showStatus('Update finished.', 'success');
+  } catch (e) {
+    showStatus('Update failed: ' + e.message, 'error');
+  } finally {
+    const btn2 = document.getElementById('btnInstallUpdate');
+    if (btn2) btn2.disabled = false;
+    loadUpdateStatus();
+  }
+}
+
+document.getElementById('btnCheckUpdate')?.addEventListener('click', checkForUpdates);
+document.getElementById('btnInstallUpdate')?.addEventListener('click', installUpdate);
+
 // Initialize on page load
 loadSystems();
 loadPorts();
 loadConnections();
+loadUpdateStatus();
 setInterval(loadConnections, 5000);
 setInterval(loadPorts, 5000);
+setInterval(loadUpdateStatus, 15000);
 connectEventStream();
 connectWebSocket();
 initThrottleFunctions();

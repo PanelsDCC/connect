@@ -33,10 +33,11 @@ fi
 
 echo "Updating version to $NEW_VERSION..."
 
-# Update pom.xml - only the project version (the version tag right after <artifactId>dcc-io-daemon</artifactId>)
-# Use awk to be more precise and only change the version after the artifactId
+# Update pom.xml - only the project version (the <version> immediately after <artifactId>panelsDCC-connect</artifactId>)
+# Use awk to be more precise and only change that version (not dependency versions)
+DEB_SOURCE_NAME="panelsdcc-connect"
 awk -v new_version="${NEW_VERSION}" '
-/<artifactId>dcc-io-daemon<\/artifactId>/ {
+/<artifactId>panelsDCC-connect<\/artifactId>/ {
     print
     getline
     if (match($0, /<version>[^<]*<\/version>/)) {
@@ -58,7 +59,7 @@ DATE=$(date -R)
 if [ -f "$CHANGELOG_FILE" ]; then
     # Create new changelog entry at the top
     {
-        echo "dcc-io-daemon (${DEBIAN_FULL_VERSION}) unstable; urgency=medium"
+        echo "${DEB_SOURCE_NAME} (${DEBIAN_FULL_VERSION}) unstable; urgency=medium"
         echo ""
         echo "  * Version ${NEW_VERSION}"
         echo ""

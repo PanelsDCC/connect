@@ -1,0 +1,3 @@
+# Allow the panelsdcc-connect service user (dcc-io) to install OS package updates from the web UI.
+# Installed as /etc/sudoers.d/panelsdcc-connect-updater (mode 0440).
+dcc-io ALL=(root) NOPASSWD: /usr/local/bin/panelsdcc-connect-updater install

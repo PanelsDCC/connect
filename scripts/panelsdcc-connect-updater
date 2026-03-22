@@ -1,0 +1,10 @@
+#!/bin/bash
+# panelsDCC-connect updater CLI — runs the Java updater with the installed fat JAR.
+# Usage: panelsdcc-connect-updater check|install|test
+set -e
+JAR="$(ls /usr/lib/panelsdcc-connect/panelsDCC-connect-*-jar-with-dependencies.jar 2>/dev/null | head -1)"
+if [ -z "$JAR" ] || [ ! -f "$JAR" ]; then
+  echo "panelsDCC-connect JAR not found under /usr/lib/panelsdcc-connect/" >&2
+  exit 1
+fi
+exec /usr/bin/java -cp "$JAR" cc.panelsd.connect.updater.ConnectUpdater "$@"

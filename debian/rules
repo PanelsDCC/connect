@@ -35,6 +35,13 @@ override_dh_auto_install:
 	mkdir -p debian/tmp/usr/local/bin
 	cp scripts/jmri-install debian/tmp/usr/local/bin/
 	chmod +x debian/tmp/usr/local/bin/jmri-install
+	cp scripts/panelsdcc-connect-updater debian/tmp/usr/local/bin/
+	chmod +x debian/tmp/usr/local/bin/panelsdcc-connect-updater
+	
+	# sudoers fragment for web-triggered dpkg install (dcc-io -> updater script)
+	mkdir -p debian/tmp/etc/sudoers.d
+	cp debian/panelsdcc-connect.sudoers debian/tmp/etc/sudoers.d/panelsdcc-connect-updater
+	chmod 440 debian/tmp/etc/sudoers.d/panelsdcc-connect-updater
 	
 	# Install systemd service file (with version substitution)
 	mkdir -p debian/tmp/lib/systemd/system

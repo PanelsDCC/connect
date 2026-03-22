@@ -7,6 +7,7 @@ import com.sun.net.httpserver.HttpServer;
 import cc.panelsd.connect.core.CommandStationConnection;
 import cc.panelsd.connect.core.SystemConfig;
 import cc.panelsd.connect.core.impl.DccIoServiceImpl;
+import cc.panelsd.connect.updater.ConnectUpdater;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -27,7 +28,10 @@ import java.util.StringJoiner;
  * <ul>
  *   <li>GET /health - daemon health</li>
  *   <li>GET /connections - list active connections</li>
-   *   <li>POST /connections/create - create a connection with query params</li>
+ *   <li>POST /connections/create - create a connection with query params</li>
+ *   <li>GET /api/update - update status JSON (from update-status.json)</li>
+ *   <li>POST /api/update/check - refresh status from GitHub</li>
+ *   <li>POST /api/update/install - install latest .deb (requires sudo; see sudoers)</li>
  * </ul>
  */
 final class DccIoHttpServer {
@@ -50,6 +54,8 @@ final class DccIoHttpServer {
         server.createContext("/api/systems", new SystemsHandler());
         server.createContext("/api/discover", new DiscoverHandler());
         server.createContext("/api/events", new EventsHandler()); // SSE endpoint for live events
+        // Software update API (single prefix; subpaths routed in handler — HttpServer matches /api/update*)
+        server.createContext("/api/update", new UpdateApiHandler());
         server.createContext("/static", new StaticFileHandler()); // Serve static files (CSS, JS)
         server.createContext("/", new WebUIHandler()); // Serve web UI
         server.setExecutor(null); // default executor
@@ -65,6 +71,35 @@ final class DccIoHttpServer {
 
     void stop(int delaySeconds) {
         server.stop(delaySeconds);
+    }
+
+    /**
+     * Runs the packaged updater script. When the daemon runs as {@code dcc-io}, install uses
+     * {@code sudo -n} (requires {@code /etc/sudoers.d/panelsdcc-connect-updater}).
+     */
+    private static void runPanelsdccUpdaterInstall() throws IOException, InterruptedException {
+        String script = "/usr/local/bin/panelsdcc-connect-updater";
+        if ("root".equals(System.getProperty("user.name"))) {
+            ProcessBuilder pb = new ProcessBuilder(script, "install");
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            int code = p.waitFor();
+            if (code != 0) {
+                throw new IOException("install failed (exit " + code + "): " + out.trim());
+            }
+            return;
+        }
+        ProcessBuilder pb = new ProcessBuilder("sudo", "-n", script, "install");
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        int code = p.waitFor();
+        if (code != 0) {
+            throw new IOException("install failed (exit " + code + "): " + out.trim()
+                    + ". Ensure /etc/sudoers.d/panelsdcc-connect-updater allows dcc-io to run "
+                    + script + " install without a password.");
+        }
     }
 
     private abstract class JsonHandler implements HttpHandler {
@@ -84,6 +119,17 @@ final class DccIoHttpServer {
             Headers headers = exchange.getResponseHeaders();
             headers.set("Content-Type", "application/json; charset=utf-8");
             byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(status, bytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(bytes);
+            }
+        }
+
+        /** Send already-serialized JSON (e.g. from {@link ConnectUpdater#getStatusJsonString()}). */
+        protected void sendJsonRaw(HttpExchange exchange, int status, String jsonBody) throws IOException {
+            Headers headers = exchange.getResponseHeaders();
+            headers.set("Content-Type", "application/json; charset=utf-8");
+            byte[] bytes = jsonBody.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(status, bytes.length);
             try (OutputStream os = exchange.getResponseBody()) {
                 os.write(bytes);
@@ -522,6 +568,59 @@ final class DccIoHttpServer {
         private String escape(String s) {
             if (s == null) return "";
             return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r");
+        }
+    }
+
+    private final class UpdateApiHandler extends JsonHandler {
+        @Override
+        protected void handleJson(HttpExchange exchange) throws IOException {
+            String path = exchange.getRequestURI().getPath();
+            if (path == null) {
+                path = "";
+            }
+            if (path.endsWith("/install")) {
+                if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                try (InputStream is = exchange.getRequestBody()) {
+                    is.readAllBytes();
+                }
+                try {
+                    runPanelsdccUpdaterInstall();
+                    sendJsonRaw(exchange, 200, ConnectUpdater.getStatusJsonString());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    sendJson(exchange, 500, "{\"error\":\"Interrupted\"}");
+                }
+                return;
+            }
+            if (path.endsWith("/check")) {
+                if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                try (InputStream is = exchange.getRequestBody()) {
+                    is.readAllBytes();
+                }
+                try {
+                    ConnectUpdater.performCheck();
+                    sendJsonRaw(exchange, 200, ConnectUpdater.getStatusJsonString());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    sendJson(exchange, 500, "{\"error\":\"Interrupted\"}");
+                }
+                return;
+            }
+            if (!"/api/update".equals(path) && !"/api/update/".equals(path)) {
+                sendJson(exchange, 404, "{\"error\":\"Not found\"}");
+                return;
+            }
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                return;
+            }
+            sendJsonRaw(exchange, 200, ConnectUpdater.getStatusJsonString());
         }
     }
 

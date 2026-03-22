@@ -89,6 +89,18 @@ The provided build scripts automatically detect and use pre-built JAR or build f
 java -cp "target/panelsDCC-connect-0.3.0-jar-with-dependencies.jar:../JMRI/jmri.jar:../JMRI/lib/*" cc.panelsd.connect.daemon.DccIoDaemon [port]
 ```
 
+## Updates (Debian package)
+
+When installed from the `panelsdcc-connect` `.deb`, an updater checks [GitHub Releases](https://github.com/PanelsDCC/connect/releases) and can install a newer `.deb`. Status is written to `/var/lib/panelsdcc-connect/update-status.json` (same pattern as panels-control).
+
+```bash
+sudo panelsdcc-connect-updater check    # compare installed vs latest release
+sudo panelsdcc-connect-updater install  # download and dpkg install (root)
+sudo panelsdcc-connect-updater test     # dry-run state machine (no network/dpkg)
+```
+
+See [docs/UPDATER.md](docs/UPDATER.md) for details. On the packaged daemon, the **Software update** section on the home page uses `GET/POST /api/update` so you can check and install without the CLI.
+
 ## Web UI
 
 The daemon includes a comprehensive web-based interface accessible at `http://localhost:9000/`.
@@ -157,6 +169,14 @@ If only one controller is connected, it's automatically assigned both roles. If 
 
 - `GET /api/events` - Server-Sent Events (SSE) stream for real-time updates
   - Event types: `MESSAGE_RECEIVED`, `MESSAGE_SENT`, `THROTTLE_UPDATED`, `POWER_CHANGED`, `CONNECTION_STATE_CHANGED`
+
+### Software updates (JSON)
+
+- `GET /api/update` - Current update status (same fields as `/var/lib/panelsdcc-connect/update-status.json`)
+- `POST /api/update/check` - Query GitHub for the latest release and refresh status
+- `POST /api/update/install` - Download and install the latest `.deb` (runs `sudo panelsdcc-connect-updater install`; requires the sudoers rule installed with the package)
+
+The web UI exposes these as **Check for updates** / **Install update**. See [docs/UPDATER.md](docs/UPDATER.md).
 
 ## WebSocket JSON API
 

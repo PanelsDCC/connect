@@ -8,6 +8,17 @@
 <body>
     <h1>panelsDCC-connect Configuration</h1>
     <div id="status"></div>
+
+    <div class="update-section">
+        <h2>Software update</h2>
+        <p class="update-line"><span class="label">Installed version:</span> <span id="installedVersion">—</span></p>
+        <p class="update-line"><span class="label">Update status:</span> <span id="updateState">—</span></p>
+        <p id="updateMessage" class="update-message"></p>
+        <div class="update-actions">
+            <button type="button" id="btnCheckUpdate" class="btn btn-primary">Check for updates</button>
+            <button type="button" id="btnInstallUpdate" class="btn btn-secondary" disabled>Install update</button>
+        </div>
+    </div>
     
     <div class="form-container">
         <div class="discovery-section">
