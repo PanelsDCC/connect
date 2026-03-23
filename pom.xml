@@ -6,7 +6,7 @@
 
   <groupId>cc.panelsd.connect</groupId>
   <artifactId>panelsDCC-connect</artifactId>
-  <version>0.4.0</version>
+  <version>0.4.3</version>
 
   <properties>
     <!-- Path to JMRI installation - can be either:

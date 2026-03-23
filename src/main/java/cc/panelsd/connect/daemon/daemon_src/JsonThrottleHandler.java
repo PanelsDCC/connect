@@ -18,7 +18,9 @@ import java.util.concurrent.TimeUnit;
  * Handles throttle operations with automatic throttle management and client locking.
  * Clients POST to an address directly - throttles are created/retrieved automatically.
  * Only one client can control speed/direction per address at a time (2 second timeout).
- * Functions can be controlled by any client concurrently.
+ * Function changes are applied for every client; speed/direction from another client are
+ * rejected with HTTP 409 unless the same POST also applied function updates, in which case
+ * functions succeed and {@code speedDirectionRejected} is set in the response data.
  */
 public class JsonThrottleHandler implements JsonMessageHandler.TypeHandler {
 
@@ -165,54 +167,13 @@ public class JsonThrottleHandler implements JsonMessageHandler.TypeHandler {
 
         String addressKey = addressKey(address, longAddress);
         boolean hasSpeedOrDirection = data.has("speed") || data.has("forward");
-        boolean hasFunctions = hasFunctionChanges(data);
-
-        // Check lock for speed/direction
-        if (hasSpeedOrDirection) {
-            LockInfo lock = speedDirectionLocks.get(addressKey);
-            if (lock != null && !lock.clientId.equals(clientId)) {
-                // Another client has control
-                throw new IllegalStateException("Throttle busy: another client is controlling speed/direction for address " + address);
-            }
-            // Update or create lock
-            if (lock == null) {
-                speedDirectionLocks.put(addressKey, new LockInfo(clientId));
-            } else {
-                lock.lastUpdateTime = System.currentTimeMillis();
-            }
-        }
 
         boolean changed = false;
         Float newSpeed = null;
         Boolean newDirection = null;
         JsonObject functionsChanged = null;
 
-        // Handle speed with throttling (250ms interval)
-        if (data.has("speed")) {
-            float speed = data.get("speed").getAsFloat();
-            validateSpeed(speed);
-            
-            // Queue the speed change for throttling
-            queueSpeedChange(throttleId, session, address, longAddress, speed);
-            
-            // Return the requested speed in response (even though it may not be sent yet)
-            changed = true;
-            newSpeed = speed;
-        }
-
-        // Handle direction
-        if (data.has("forward")) {
-            boolean forward = data.get("forward").getAsBoolean();
-            try {
-                session.setDirection(forward);
-                changed = true;
-                newDirection = forward;
-            } catch (IOException e) {
-                throw new IllegalArgumentException(e.getMessage(), e);
-            }
-        }
-
-        // Handle functions (no locking required)
+        // Apply function changes first — never blocked by the speed/direction lock
         // Support functions as an object: { "functions": { "0": true, "1": false, ... } }
         if (data.has("functions") && data.get("functions").isJsonObject()) {
             JsonObject functionsObj = data.getAsJsonObject("functions");
@@ -237,11 +198,59 @@ public class JsonThrottleHandler implements JsonMessageHandler.TypeHandler {
             }
         }
 
+        boolean applySpeedDirection = false;
+        boolean speedDirectionRejected = false;
+        if (hasSpeedOrDirection) {
+            LockInfo lock = speedDirectionLocks.get(addressKey);
+            if (lock != null && !lock.clientId.equals(clientId)) {
+                if (!changed) {
+                    throw new IllegalStateException("Throttle busy: another client is controlling speed/direction for address " + address);
+                }
+                speedDirectionRejected = true;
+            } else {
+                applySpeedDirection = true;
+                if (lock == null) {
+                    speedDirectionLocks.put(addressKey, new LockInfo(clientId));
+                } else {
+                    lock.lastUpdateTime = System.currentTimeMillis();
+                }
+            }
+        }
+
+        // Speed / direction only when this client holds (or acquires) the lock
+        if (applySpeedDirection) {
+            // Handle speed with throttling (250ms interval)
+            if (data.has("speed")) {
+                float speed = data.get("speed").getAsFloat();
+                validateSpeed(speed);
+
+                queueSpeedChange(throttleId, session, address, longAddress, speed);
+
+                changed = true;
+                newSpeed = speed;
+            }
+
+            // Handle direction
+            if (data.has("forward")) {
+                boolean forward = data.get("forward").getAsBoolean();
+                try {
+                    session.setDirection(forward);
+                    changed = true;
+                    newDirection = forward;
+                } catch (IOException e) {
+                    throw new IllegalArgumentException(e.getMessage(), e);
+                }
+            }
+        }
+
         JsonObject response = new JsonObject();
         response.addProperty("type", "throttle");
         JsonObject payload = throttleInfo(session);
         if (changed) {
             payload.addProperty("updated", true);
+        }
+        if (speedDirectionRejected) {
+            payload.addProperty("speedDirectionRejected", true);
         }
         response.add("data", payload);
         
@@ -270,10 +279,6 @@ public class JsonThrottleHandler implements JsonMessageHandler.TypeHandler {
 
     private String addressKey(int address, boolean longAddress) {
         return address + ":" + longAddress;
-    }
-
-    private boolean hasFunctionChanges(JsonObject data) {
-        return data.has("functions") && data.get("functions").isJsonObject();
     }
 
     private JsonObject throttleInfo(ThrottleSession session) {

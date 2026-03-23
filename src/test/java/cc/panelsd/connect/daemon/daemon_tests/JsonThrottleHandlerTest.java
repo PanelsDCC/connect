@@ -170,6 +170,51 @@ class JsonThrottleHandlerTest {
         assertTrue(resp2.getAsJsonObject("data").get("message").getAsString().contains("busy"));
     }
 
+    @Test
+    void functionUpdatesApplyWhenAnotherClientHoldsSpeedLockEvenIfSpeedAlsoSent() {
+        service.openThrottle(null, 11, false);
+
+        JsonObject post1 = new JsonObject();
+        post1.addProperty("type", "throttle");
+        post1.addProperty("method", "post");
+        post1.addProperty("clientId", "client1");
+        JsonObject data1 = new JsonObject();
+        data1.addProperty("address", 11);
+        data1.addProperty("speed", 0.5);
+        post1.add("data", data1);
+        assertEquals("throttle", messageHandler.handle(post1).get("type").getAsString());
+
+        JsonObject post2 = new JsonObject();
+        post2.addProperty("type", "throttle");
+        post2.addProperty("method", "post");
+        post2.addProperty("clientId", "client2");
+        JsonObject data2 = new JsonObject();
+        data2.addProperty("address", 11);
+        data2.addProperty("speed", 0.9);
+        JsonObject functions = new JsonObject();
+        functions.addProperty("3", true);
+        data2.add("functions", functions);
+        post2.add("data", data2);
+
+        JsonObject resp2 = messageHandler.handle(post2);
+        assertEquals("throttle", resp2.get("type").getAsString());
+        JsonObject respData = resp2.getAsJsonObject("data");
+        assertTrue(respData.get("updated").getAsBoolean());
+        assertTrue(respData.get("speedDirectionRejected").getAsBoolean());
+        assertEquals(0.5f, respData.get("speed").getAsFloat());
+
+        FakeThrottleSession session = null;
+        for (FakeThrottleSession s : service.sessions.values()) {
+            if (s.getAddress() == 11 && !s.isLongAddress()) {
+                session = s;
+                break;
+            }
+        }
+        assertNotNull(session);
+        assertTrue(session.getFunction(3));
+        assertEquals(0.5f, session.speed);
+    }
+
     private static final class FakeThrottleService implements JsonThrottleHandler.ThrottleService {
         private final Map<String, FakeThrottleSession> sessions = new ConcurrentHashMap<>();
         private int counter = 0;
