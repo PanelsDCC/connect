@@ -478,7 +478,7 @@ final class DccIoHttpServer {
             // Return list of supported system types
             String json = "{\"systems\":[" +
                     "{\"id\":\"xnet-elite\",\"name\":\"Hornby Elite / XpressNet\",\"connectionTypes\":[\"serial\",\"usb\"]}," +
-                    "{\"id\":\"dccpp-ethernet\",\"name\":\"DCC++ (Ethernet)\",\"connectionTypes\":[\"network\"]}," +
+                    "{\"id\":\"dccpp\",\"name\":\"DCC++ / DCC-EX\",\"connectionTypes\":[\"network\",\"serial\",\"usb\"]}," +
                     "{\"id\":\"nce-serial\",\"name\":\"NCE PowerCab (Serial)\",\"connectionTypes\":[\"serial\",\"usb\"]}," +
                     "{\"id\":\"nce-usb\",\"name\":\"NCE PowerCab (USB)\",\"connectionTypes\":[\"usb\"]}" +
                     "]}";

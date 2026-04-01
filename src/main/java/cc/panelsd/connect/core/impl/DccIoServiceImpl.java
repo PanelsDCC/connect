@@ -273,6 +273,7 @@ public final class DccIoServiceImpl implements DccIoService {
             case "xnet-elite":
                 conn = new XNetEliteConnection(config, eventBus);
                 break;
+            case "dccpp":
             case "dccpp-ethernet":
                 conn = new DccppConnection(config, eventBus);
                 break;

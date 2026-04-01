@@ -40,7 +40,7 @@ Perfect for headless deployments on Raspberry Pi or other embedded systems where
 - For how we interface with JMRI and how to add new controllers, see [docs/JMRI-INTEGRATION.md](docs/JMRI-INTEGRATION.md).
 - **NCE PowerCab Serial** (`nce-serial`) - Serial/USB - Untested
 - **NCE PowerCab USB** (`nce-usb`) - USB - Untested
-- **DCC++ Ethernet** (`dccpp-ethernet`) - Network connection - Untested
+- **DCC++ / DCC-EX** (`dccpp`) - USB/serial (e.g. CSB1) or Ethernet TCP; `dccpp-ethernet` is still accepted as an alias - Untested
 
 ## Prerequisites
 
@@ -81,12 +81,22 @@ The provided build scripts automatically detect and use pre-built JAR or build f
 - **Linux/Mac**: `./build.sh`
 - **Windows**: `build.bat`
 
+After a successful build, **Linux/Mac** can run the newest fat JAR with:
+
+- `./run.sh [httpPort]` — picks `target/*-jar-with-dependencies.jar` by modification time; uses `JMRI_HOME` or `../JMRI` like `build.sh`.
+
 ## Running
 
 ### Basic Usage
 
 ```bash
-java -cp "target/panelsDCC-connect-0.3.0-jar-with-dependencies.jar:../JMRI/jmri.jar:../JMRI/lib/*" cc.panelsd.connect.daemon.DccIoDaemon [port]
+./run.sh 9000
+```
+
+Manual classpath (same as `run.sh`; replace the versioned JAR name with yours):
+
+```bash
+java -cp "target/panelsDCC-connect-0.4.3-jar-with-dependencies.jar:../JMRI/jmri.jar:../JMRI/lib/*" cc.panelsd.connect.daemon.DccIoDaemon [port]
 ```
 
 ## Updates (Debian package)
@@ -628,7 +638,7 @@ Each connection implementation:
 - `XNetEliteConnection`: Hornby Elite / XpressNet (wraps JMRI's `XNetSystemConnectionMemo`)
 - `NceSerialConnection`: NCE PowerCab Serial (wraps JMRI's `NceSystemConnectionMemo`)
 - `NceUsbConnection`: NCE PowerCab USB (wraps JMRI's `NceSystemConnectionMemo`)
-- `DccppConnection`: DCC++ Ethernet (wraps JMRI's `DCCppSystemConnectionMemo`)
+- `DccppConnection`: DCC++ / DCC-EX — serial via `DCCppAdapter` or TCP via `DCCppEthernetAdapter` (same class; options `portName` vs `host`/`port`)
 
 ### Web Server
 

@@ -21,38 +21,54 @@ import jmri.ThrottleManager;
 import jmri.TurnoutManager;
 import jmri.jmrix.SystemConnectionMemoManager;
 import jmri.jmrix.dccpp.DCCppCommandStation;
-import jmri.jmrix.dccpp.DCCppPacketizer;
+import jmri.jmrix.dccpp.DCCppInterface;
+import jmri.jmrix.dccpp.DCCppListener;
+import jmri.jmrix.dccpp.DCCppMessage;
+import jmri.jmrix.dccpp.DCCppReply;
 import jmri.jmrix.dccpp.DCCppSystemConnectionMemo;
 import jmri.jmrix.dccpp.DCCppTrafficController;
 import jmri.jmrix.dccpp.network.DCCppEthernetAdapter;
+import jmri.jmrix.dccpp.serial.DCCppAdapter;
 
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * CommandStationConnection for DCC++, using the Ethernet adapter variant as
- * an example. Other variants can be added by inspecting {@link SystemConfig}
- * options (e.g. serial vs simulator).
+ * Command station connection for DCC++ / DCC-EX: one implementation, two transports.
+ * <ul>
+ *   <li><strong>USB / serial:</strong> {@code portName} (e.g. {@code /dev/ttyACM0}) via JMRI
+ *       {@link DCCppAdapter}.</li>
+ *   <li><strong>Ethernet:</strong> {@code host} and {@code port} (TCP) via {@link DCCppEthernetAdapter}.</li>
+ * </ul>
+ * Auto-discovery supplies {@code portName} and {@link SystemConfig#getSystemType()} {@code dccpp}.
  */
 public final class DccppConnection extends BaseCommandStationConnection {
 
     private final DCCppSystemConnectionMemo memo;
-    private final DCCppTrafficController trafficController;
-    private final DCCppCommandStation commandStation;
+
+    private DCCppEthernetAdapter ethernetAdapter;
+    private DCCppAdapter serialAdapter;
 
     private JmriAccessoryController accessoryController;
     private JmriProgrammerSession programmerSession;
 
     private final PropertyChangeListener powerListener = this::onPowerChange;
 
+    /**
+     * DCC-EX often uses named track power replies ({@code <p ...>}) that JMRI's {@code DCCppPowerManager}
+     * does not map into {@link PowerManager#getPower()}; we mirror MAIN (or first) district here.
+     */
+    private final AtomicInteger supplementalTrackPower = new AtomicInteger(PowerManager.UNKNOWN);
+
+    private DCCppListener dccppReplyListener;
+
     public DccppConnection(SystemConfig config, DccEventBus eventBus) {
         super(config, eventBus);
-        this.commandStation = new DCCppCommandStation(null);
-        this.trafficController = new DCCppPacketizer(commandStation);
-        this.memo = new DCCppSystemConnectionMemo(trafficController);
+        this.memo = new DCCppSystemConnectionMemo();
         memo.setUserName(config.getUserName());
         memo.setSystemPrefix(config.getSystemPrefix());
         SystemConnectionMemoManager.getDefault().register(memo);
@@ -63,22 +79,62 @@ public final class DccppConnection extends BaseCommandStationConnection {
         if (connected) {
             return;
         }
+        String portName = config.getOption("portName");
+        boolean hasPort = portName != null && !portName.isBlank();
         String host = config.getOption("host");
-        String port = config.getOption("port");
-        if (host == null || port == null) {
-            throw new IOException("Missing 'host' or 'port' option for DCC++ connection");
+        String portOpt = config.getOption("port");
+
+        if (hasPort) {
+            connectSerial(portName.trim());
+        } else if (host != null && !host.isBlank() && portOpt != null && !portOpt.isBlank()) {
+            connectEthernet(host.trim(), portOpt.trim());
+        } else {
+            throw new IOException(
+                    "DCC++ connection needs either portName (USB/serial) or host and port (Ethernet)");
         }
-        DCCppEthernetAdapter adapter = new DCCppEthernetAdapter();
-        adapter.setSystemConnectionMemo(memo);
-        adapter.setHostName(host);
-        adapter.setPort(Integer.parseInt(port));
-        trafficController.connectPort(adapter);
-        adapter.connect();
-        adapter.configure();
 
         connected = true;
         attachManagersAndListeners();
+        try {
+            requestVersion();
+        } catch (IOException e) {
+            // same pattern as XNetElite — connection stays up
+        }
         publishConnectionState();
+    }
+
+    private void connectSerial(String portName) throws IOException {
+        serialAdapter = new DCCppAdapter();
+        serialAdapter.setSystemConnectionMemo(memo);
+        // JMRI normally sets this from Connection Config UI; without it, mBaudRate stays null and
+        // openPort() logs "no match to (null) in currentBaudNumber" and never applies a valid baud.
+        String baudOpt = config.getOption("baudRate");
+        if (baudOpt != null && !baudOpt.isBlank()) {
+            serialAdapter.configureBaudRateFromNumber(baudOpt.trim());
+        } else {
+            serialAdapter.configureBaudRateFromIndex(serialAdapter.defaultBaudIndex());
+        }
+        String err = serialAdapter.openPort(portName, "dcc-io-daemon");
+        if (err != null) {
+            serialAdapter = null;
+            throw new IOException("Failed to open DCC++ serial port: " + err);
+        }
+        serialAdapter.configure();
+    }
+
+    private void connectEthernet(String host, String portStr) throws IOException {
+        int port;
+        try {
+            port = Integer.parseInt(portStr);
+        } catch (NumberFormatException e) {
+            throw new IOException("Invalid TCP port for DCC++ Ethernet: " + portStr);
+        }
+        ethernetAdapter = new DCCppEthernetAdapter();
+        ethernetAdapter.setSystemConnectionMemo(memo);
+        ethernetAdapter.setHostName(host);
+        ethernetAdapter.setPort(port);
+        ethernetAdapter.connect();
+        ethernetAdapter.configure();
     }
 
     private void attachManagersAndListeners() {
@@ -97,6 +153,25 @@ public final class DccppConnection extends BaseCommandStationConnection {
         PowerManager pm = memo.getPowerManager();
         if (pm != null) {
             pm.addPropertyChangeListener(powerListener);
+        }
+
+        DCCppTrafficController tc = memo.getDCCppTrafficController();
+        if (tc != null) {
+            dccppReplyListener = new DCCppListener() {
+                @Override
+                public void message(DCCppReply m) {
+                    onDccppReply(m);
+                }
+
+                @Override
+                public void message(DCCppMessage m) {
+                }
+
+                @Override
+                public void notifyTimeout(DCCppMessage m) {
+                }
+            };
+            tc.addDCCppListener(DCCppInterface.CS_INFO, dccppReplyListener);
         }
     }
 
@@ -121,7 +196,6 @@ public final class DccppConnection extends BaseCommandStationConnection {
 
             @Override
             public void notifyDecisionRequired(jmri.LocoAddress address, ThrottleListener.DecisionType question) {
-                // Default behavior: cancel the request if a decision is required
                 error[0] = new IOException("Throttle address " + address + " is in use, decision required: " + question);
             }
         };
@@ -146,14 +220,16 @@ public final class DccppConnection extends BaseCommandStationConnection {
     }
 
     @Override
-    public java.util.Map<String, String> getCommandStationInfo() {
+    public Map<String, String> getCommandStationInfo() {
+        DCCppTrafficController tc = memo.getDCCppTrafficController();
+        DCCppCommandStation cs = tc != null ? tc.getCommandStation() : null;
         Map<String, String> info = new HashMap<>();
-        if (commandStation != null) {
-            String stationType = commandStation.getStationType();
-            String version = commandStation.getVersion();
-            String build = commandStation.getBuild();
-            String versionString = commandStation.getVersionString();
-            
+        if (cs != null) {
+            String stationType = cs.getStationType();
+            String version = cs.getVersion();
+            String build = cs.getBuild();
+            String versionString = cs.getVersionString();
+
             if (stationType != null && !stationType.equals("Unknown")) {
                 info.put("type", stationType);
             }
@@ -171,21 +247,73 @@ public final class DccppConnection extends BaseCommandStationConnection {
         return info.isEmpty() ? null : info;
     }
 
+    private void onDccppReply(DCCppReply m) {
+        if (m.isNamedPowerReply()) {
+            String district = m.getPowerDistrictName();
+            String st = m.getPowerDistrictStatus();
+            int v = "ON".equals(st) ? PowerManager.ON : "OFF".equals(st) ? PowerManager.OFF : PowerManager.UNKNOWN;
+            if (v == PowerManager.UNKNOWN) {
+                return;
+            }
+            boolean mainDistrict = "MAIN".equalsIgnoreCase(district);
+            if (!mainDistrict && supplementalTrackPower.get() != PowerManager.UNKNOWN) {
+                // After we know a district, only MAIN overrides (typical DCC-EX layout)
+                return;
+            }
+            int prev = supplementalTrackPower.getAndSet(v);
+            if (prev != v) {
+                Map<String, Object> payload = new HashMap<>();
+                payload.put("old", prev);
+                payload.put("new", v);
+                payload.put("status", powerIntToLabel(v));
+                payload.put("track", district);
+                eventBus.publish(new DccEvent(DccEventType.POWER_CHANGED, id, payload));
+            }
+            return;
+        }
+        if (m.isStatusReply()) {
+            // JMRI's PowerManager already ran setCommandStationInfo; push a WS/status refresh
+            eventBus.publish(new DccEvent(DccEventType.CONNECTION_STATE_CHANGED, id, new HashMap<>()));
+        }
+    }
+
+    private static String powerIntToLabel(int power) {
+        switch (power) {
+            case PowerManager.ON:
+                return "ON";
+            case PowerManager.OFF:
+                return "OFF";
+            case PowerManager.IDLE:
+                return "IDLE";
+            default:
+                return "UNKNOWN";
+        }
+    }
+
+    @Override
+    public void requestVersion() throws IOException {
+        if (!connected) {
+            throw new IOException("Not connected");
+        }
+        DCCppTrafficController tc = memo.getDCCppTrafficController();
+        if (tc == null) {
+            throw new IOException("DCC++ traffic controller not available");
+        }
+        tc.sendDCCppMessage(DCCppMessage.makeCSStatusMsg(), null);
+    }
+
     @Override
     public String getPowerStatus() {
         PowerManager pm = memo.getPowerManager();
         if (pm != null) {
             int power = pm.getPower();
-            switch (power) {
-                case PowerManager.ON:
-                    return "ON";
-                case PowerManager.OFF:
-                    return "OFF";
-                case PowerManager.IDLE:
-                    return "IDLE";
-                default:
-                    return "UNKNOWN";
+            if (power != PowerManager.UNKNOWN) {
+                return powerIntToLabel(power);
             }
+        }
+        int s = supplementalTrackPower.get();
+        if (s != PowerManager.UNKNOWN) {
+            return powerIntToLabel(s);
         }
         return "UNKNOWN";
     }
@@ -199,7 +327,7 @@ public final class DccppConnection extends BaseCommandStationConnection {
         if (pm == null) {
             throw new IOException("PowerManager not available");
         }
-        
+
         int powerValue;
         switch (powerState.toUpperCase()) {
             case "ON":
@@ -214,7 +342,7 @@ public final class DccppConnection extends BaseCommandStationConnection {
             default:
                 throw new IllegalArgumentException("Invalid power state: " + powerState + ". Must be ON, OFF, or IDLE");
         }
-        
+
         try {
             pm.setPower(powerValue);
         } catch (jmri.JmriException e) {
@@ -227,6 +355,10 @@ public final class DccppConnection extends BaseCommandStationConnection {
             Map<String, Object> payload = new HashMap<>();
             payload.put("old", evt.getOldValue());
             payload.put("new", evt.getNewValue());
+            Object newVal = evt.getNewValue();
+            if (newVal instanceof Integer) {
+                payload.put("status", powerIntToLabel((Integer) newVal));
+            }
             eventBus.publish(new DccEvent(DccEventType.POWER_CHANGED, id, payload));
         }
     }
@@ -235,27 +367,48 @@ public final class DccppConnection extends BaseCommandStationConnection {
     public void close() {
         connected = false;
         publishConnectionState();
-        
-        // Remove listeners first
+
         PowerManager pm = memo.getPowerManager();
         if (pm != null) {
             pm.removePropertyChangeListener(powerListener);
         }
-        
-        // Terminate traffic controller threads before closing
-        if (trafficController != null) {
+
+        DCCppTrafficController tc = memo.getDCCppTrafficController();
+        if (tc != null && dccppReplyListener != null) {
             try {
-                trafficController.terminateThreads();
+                tc.removeDCCppListener(DCCppInterface.CS_INFO, dccppReplyListener);
             } catch (Exception e) {
-                // Ignore errors during shutdown
+                // ignore
+            }
+            dccppReplyListener = null;
+        }
+        supplementalTrackPower.set(PowerManager.UNKNOWN);
+
+        if (tc != null) {
+            try {
+                tc.terminateThreads();
+            } catch (Exception e) {
+                // ignore shutdown errors
             }
         }
-        
-        // Dispose memo (which should handle adapter cleanup)
-        if (memo != null) {
+
+        if (serialAdapter != null) {
+            try {
+                serialAdapter.dispose();
+            } catch (Exception e) {
+                // ignore
+            }
+            serialAdapter = null;
+        } else if (ethernetAdapter != null) {
+            try {
+                ethernetAdapter.dispose();
+            } catch (Exception e) {
+                // ignore
+            }
+            ethernetAdapter = null;
+        } else if (memo != null) {
+            // connect() never completed; memo was not disposed by an adapter
             memo.dispose();
         }
     }
 }
-
-

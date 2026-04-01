@@ -55,8 +55,8 @@ fi
 
 echo ""
 echo "Build complete! Run with:"
-echo "  java -jar target/panelsdcc-connect-0.1.0-SNAPSHOT-jar-with-dependencies.jar [port]"
+echo "  ./run.sh [httpPort]     # uses newest target/*-jar-with-dependencies.jar + JMRI from JMRI_HOME or ../JMRI"
 echo ""
-echo "Note: If using system scope, you may need to add JMRI to classpath:"
-echo "  java -cp \"target/panelsdcc-connect-0.1.0-SNAPSHOT-jar-with-dependencies.jar:$JMRI_PREBUILT/jmri.jar:$JMRI_PREBUILT/lib/*\" cc.panelsd.connect.daemon.DccIoDaemon [port]"
+echo "Or manually (same classpath as run.sh):"
+echo "  java -cp \"target/<artifact>-jar-with-dependencies.jar:$JMRI_PREBUILT/jmri.jar:$JMRI_PREBUILT/lib/*\" cc.panelsd.connect.daemon.DccIoDaemon [httpPort]"
 

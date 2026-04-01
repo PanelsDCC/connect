@@ -81,8 +81,8 @@ public class JsonStatusHandler implements JsonMessageHandler.TypeHandler {
             JsonObject previous = previousState.get(connId);
             boolean isNew = (previous == null);
             
-            // Build current connection state
-            JsonObject current = buildConnectionObject(c, isNew);
+            // Full snapshot so deltas include commandStation / version when they change
+            JsonObject current = buildConnectionObject(c, true);
             
             // Check if anything changed
             boolean changed = false;
@@ -100,8 +100,12 @@ public class JsonStatusHandler implements JsonMessageHandler.TypeHandler {
                 JsonArray currentRoles = current.getAsJsonArray("roles");
                 JsonArray previousRoles = previous.has("roles") ? previous.getAsJsonArray("roles") : new JsonArray();
                 boolean rolesChanged = !rolesEqual(currentRoles, previousRoles);
+
+                String prevCs = previous.has("commandStation") ? previous.get("commandStation").toString() : "";
+                String currCs = current.has("commandStation") ? current.get("commandStation").toString() : "";
+                boolean commandStationChanged = !prevCs.equals(currCs);
                 
-                if (connectedChanged || powerChanged || rolesChanged) {
+                if (connectedChanged || powerChanged || rolesChanged || commandStationChanged) {
                     changed = true;
                 }
             }

@@ -44,6 +44,13 @@
                 <label>System Prefix:</label>
                 <input type="text" id="systemPrefix" placeholder="Optional">
             </div>
+            <div class="form-group" id="dccppTransportGroup" style="display:none;">
+                <label>DCC++ / DCC-EX transport:</label>
+                <div class="radio-row" style="margin-top:6px;">
+                    <label style="margin-right:16px;"><input type="radio" name="dccppTransport" value="serial" checked> USB / Serial</label>
+                    <label><input type="radio" name="dccppTransport" value="ethernet"> Ethernet</label>
+                </div>
+            </div>
             <div class="form-group" id="portGroup">
                 <label>Port (e.g., /dev/ttyACM0, /dev/ttyUSB0, COM3):</label>
                 <select id="portName"></select>

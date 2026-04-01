@@ -63,31 +63,48 @@
       "descriptionPatterns": ["nce"]
     },
     {
-      "name": "DCC++ (Arduino)",
+      "name": "DCC++ (Arduino Uno)",
       "vendorId": "0x2341",
       "productId": "0x0042",
-      "systemType": "dccpp-ethernet",
+      "systemType": "dccpp",
       "defaultPort": null,
-      "config": {},
+      "config": {
+        "baudRate": "115200"
+      },
       "descriptionPatterns": ["dcc++", "dccpp", "arduino"]
     },
     {
       "name": "DCC++ (Arduino Leonardo)",
       "vendorId": "0x2341",
       "productId": "0x0043",
-      "systemType": "dccpp-ethernet",
+      "systemType": "dccpp",
       "defaultPort": null,
-      "config": {},
+      "config": {
+        "baudRate": "115200"
+      },
       "descriptionPatterns": ["dcc++", "dccpp", "arduino"]
     },
     {
-      "name": "DCC++ (ttyUSB0)",
+      "name": "DCC++ (CH340)",
       "vendorId": "0x1a86",
       "productId": "0x7523",
-      "systemType": "dccpp-ethernet",
+      "systemType": "dccpp",
       "defaultPort": null,
-      "config": {},
+      "config": {
+        "baudRate": "115200"
+      },
       "descriptionPatterns": ["dcc++", "dccpp"]
+    },
+    {
+      "name": "DCC-EX CSB1 / ESP32-S3 (USB CDC)",
+      "vendorId": "0x303a",
+      "productId": "0x1001",
+      "systemType": "dccpp",
+      "defaultPort": null,
+      "config": {
+        "baudRate": "115200"
+      },
+      "descriptionPatterns": ["dcc-ex", "dcc++", "dccpp", "csb1", "espressif"]
     },
     {
       "name": "SPROG IIv3",
@@ -118,4 +135,3 @@
     }
   ]
 }
-

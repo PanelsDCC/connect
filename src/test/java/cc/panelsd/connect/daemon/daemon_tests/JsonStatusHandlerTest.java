@@ -17,7 +17,7 @@ class JsonStatusHandlerTest {
     @Test
     void returnsConnectionsWithRolesAndInfo() {
         FakeConnection c1 = new FakeConnection("c1", "xnet-elite", true, Map.of("version", "1.0"), "ON");
-        FakeConnection c2 = new FakeConnection("c2", "dccpp-ethernet", false, Map.of(), "OFF");
+        FakeConnection c2 = new FakeConnection("c2", "dccpp", false, Map.of(), "OFF");
 
         JsonStatusHandler.StatusProvider provider = new JsonStatusHandler.StatusProvider() {
             @Override

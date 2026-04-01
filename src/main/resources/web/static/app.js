@@ -42,24 +42,56 @@ async function loadPorts() {
   }
 }
 
-document.getElementById('systemType').addEventListener('change', (e) => {
-  const system = systems.find(s => s.id === e.target.value);
-  if (system && system.connectionTypes.includes('network')) {
-    document.getElementById('portGroup').style.display = 'none';
-    document.getElementById('serialOptionsGroup').style.display = 'none';
-    document.getElementById('networkGroup').style.display = 'block';
+function updateTransportFields() {
+  const systemId = document.getElementById('systemType').value;
+  const system = systems.find(s => s.id === systemId);
+  const portGroup = document.getElementById('portGroup');
+  const serialOpts = document.getElementById('serialOptionsGroup');
+  const networkGroup = document.getElementById('networkGroup');
+  const dccppTransportGroup = document.getElementById('dccppTransportGroup');
+  const baudRateSelect = document.getElementById('baudRate');
+
+  if (!system) {
+    portGroup.style.display = 'block';
+    serialOpts.style.display = 'none';
+    networkGroup.style.display = 'none';
+    dccppTransportGroup.style.display = 'none';
+    return;
+  }
+
+  const hasNet = system.connectionTypes.includes('network');
+  const hasSerial = system.connectionTypes.includes('serial') || system.connectionTypes.includes('usb');
+  const hybrid = hasNet && hasSerial;
+  dccppTransportGroup.style.display = hybrid ? 'block' : 'none';
+
+  let useEthernet = hasNet && !hasSerial;
+  if (hybrid) {
+    const checked = document.querySelector('input[name="dccppTransport"]:checked');
+    useEthernet = checked && checked.value === 'ethernet';
+  }
+
+  if (useEthernet) {
+    portGroup.style.display = 'none';
+    serialOpts.style.display = 'none';
+    networkGroup.style.display = 'block';
   } else {
-    document.getElementById('portGroup').style.display = 'block';
-    document.getElementById('serialOptionsGroup').style.display = 'block';
-    document.getElementById('networkGroup').style.display = 'none';
-    // Set default baud rate based on system type
-    const baudRateSelect = document.getElementById('baudRate');
-    if (e.target.value === 'xnet-elite') {
+    portGroup.style.display = 'block';
+    serialOpts.style.display = hasSerial ? 'block' : 'none';
+    networkGroup.style.display = 'none';
+    if (systemId === 'dccpp') {
+      baudRateSelect.value = '115200';
+    } else if (systemId === 'xnet-elite') {
       baudRateSelect.value = '19200';
     } else {
       baudRateSelect.value = '';
     }
   }
+}
+
+document.getElementById('systemType').addEventListener('change', () => updateTransportFields());
+
+document.querySelectorAll('input[name="dccppTransport"]').forEach((el) => {
+  el.addEventListener('change', () => updateTransportFields());
 });
 
 document.getElementById('configForm').addEventListener('submit', async (e) => {
@@ -74,7 +106,14 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
     params.append('systemPrefix', document.getElementById('systemPrefix').value);
   }
   const system = systems.find(s => s.id === document.getElementById('systemType').value);
-  if (system && system.connectionTypes.includes('network')) {
+  const hasNet = system && system.connectionTypes.includes('network');
+  const hasSerial = system && (system.connectionTypes.includes('serial') || system.connectionTypes.includes('usb'));
+  const hybrid = hasNet && hasSerial;
+  const useEthernet = hybrid
+    ? (document.querySelector('input[name="dccppTransport"]:checked') || {}).value === 'ethernet'
+    : hasNet && !hasSerial;
+
+  if (useEthernet) {
     params.append('host', document.getElementById('host').value);
     params.append('port', document.getElementById('port').value);
   } else {
@@ -461,7 +500,13 @@ function handleEvent(data) {
     }
     addConsoleLine(data.type === 'MESSAGE_RECEIVED' ? 'in' : 'out', messageText);
     // If this looks like a version response, reload connections to show updated info
-    if (data.type === 'MESSAGE_RECEIVED' && decoded && (decoded.includes('Software Version') || decoded.includes('CS Version') || (hex && hex.includes('63 21')))) {
+    if (data.type === 'MESSAGE_RECEIVED' && decoded && (
+      decoded.includes('Software Version') ||
+      decoded.includes('CS Version') ||
+      decoded.includes('DCC-EX') ||
+      decoded.includes('Station:') ||
+      (hex && hex.includes('63 21'))
+    )) {
       setTimeout(() => loadConnections(), 500);
     }
   } else if (data.type === 'THROTTLE_UPDATED') {
@@ -616,10 +661,13 @@ async function discoverDevices() {
 }
 
 function useDiscoveredDevice(port, systemType) {
-  document.getElementById('portName').value = port;
+  if (systemType === 'dccpp') {
+    const serialRadio = document.querySelector('input[name="dccppTransport"][value="serial"]');
+    if (serialRadio) serialRadio.checked = true;
+  }
   document.getElementById('systemType').value = systemType;
-  // Trigger change event to show/hide appropriate fields
   document.getElementById('systemType').dispatchEvent(new Event('change'));
+  document.getElementById('portName').value = port;
   showStatus('Device selected: ' + port, 'success');
 }
 

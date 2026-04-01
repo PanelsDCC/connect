@@ -25,7 +25,7 @@ public interface CommandStationConnection extends Closeable {
 
     /**
      * Logical system type identifier, e.g. {@code "xnet-elite"} or
-     * {@code "dccpp-serial"}.
+     * {@code "dccpp"} (USB/serial or Ethernet; see {@code DccppConnection}).
      */
     String getSystemType();
 
