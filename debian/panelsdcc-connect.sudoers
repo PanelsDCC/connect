@@ -2,3 +2,5 @@
 # Installed as /etc/sudoers.d/panelsdcc-connect-updater (mode 0440).
 # "install" = CLI (wait). "install --background" = web UI (queues systemd-run without waiting).
 dcc-io ALL=(root) NOPASSWD: /usr/local/bin/panelsdcc-connect-updater install, /usr/local/bin/panelsdcc-connect-updater install --background
+# Allow the same user to manage WiFi mode/scan/connect/fallback via NetworkManager helper.
+dcc-io ALL=(root) NOPASSWD: /usr/local/bin/panelsdcc-connect-wifi status, /usr/local/bin/panelsdcc-connect-wifi scan, /usr/local/bin/panelsdcc-connect-wifi set-mode *, /usr/local/bin/panelsdcc-connect-wifi connect *, /usr/local/bin/panelsdcc-connect-wifi apply-fallback, /usr/local/bin/panelsdcc-connect-wifi ensure-hotspot-profile

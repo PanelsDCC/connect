@@ -1055,14 +1055,162 @@ async function installUpdate() {
 document.getElementById('btnCheckUpdate')?.addEventListener('click', checkForUpdates);
 document.getElementById('btnInstallUpdate')?.addEventListener('click', installUpdate);
 
+function buildWifiQrPayload(ssid, password) {
+  if (!ssid || !password) {
+    return '';
+  }
+  const esc = (value) => String(value).replace(/([\\;,:"])/g, '\\$1');
+  return `WIFI:S:${esc(ssid)};T:WPA;P:${esc(password)};H:false;;`;
+}
+
+function renderWifiQr(ssid, password) {
+  const img = document.getElementById('wifiQrImage');
+  const hint = document.getElementById('wifiQrHint');
+  if (!img || !hint) return;
+  if (!ssid || !password) {
+    img.style.display = 'none';
+    img.removeAttribute('src');
+    hint.textContent = 'QR appears when hotspot credentials are available.';
+    return;
+  }
+  const payload = buildWifiQrPayload(ssid, password);
+  img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(payload);
+  img.style.display = 'block';
+  hint.textContent = 'Scan with a phone camera to join the hotspot.';
+}
+
+function renderWifiNetworks(networks) {
+  const container = document.getElementById('wifiScanResults');
+  if (!container) return;
+  if (!Array.isArray(networks) || networks.length === 0) {
+    container.innerHTML = '<div class="wifi-network-meta">No WiFi networks found.</div>';
+    return;
+  }
+  container.innerHTML = '';
+  networks.forEach((network) => {
+    const row = document.createElement('div');
+    row.className = 'wifi-network-item';
+    const left = document.createElement('div');
+    const ssid = network.ssid || '(hidden)';
+    const sec = network.security || 'open';
+    left.innerHTML = `<strong>${ssid}</strong><div class="wifi-network-meta">Signal ${network.signal || 0}% - ${sec}</div>`;
+    const button = document.createElement('button');
+    button.className = 'btn btn-primary btn-small';
+    button.type = 'button';
+    button.textContent = 'Use';
+    button.onclick = () => {
+      const input = document.getElementById('wifiSsid');
+      if (input) input.value = ssid;
+    };
+    row.appendChild(left);
+    row.appendChild(button);
+    container.appendChild(row);
+  });
+}
+
+async function loadWifiStatus() {
+  try {
+    const res = await fetch('/api/wifi');
+    const data = await readJsonOrError(res);
+    if (!res.ok) {
+      throw new Error(data.error || res.statusText);
+    }
+    document.getElementById('wifiMode').textContent = data.mode || '—';
+    document.getElementById('wifiState').textContent = data.wifiState || '—';
+    document.getElementById('wifiConnection').textContent = data.activeWifiConnection || data.wifiConnection || '—';
+    document.getElementById('wifiHotspotSsid').textContent = data.hotspot?.ssid || '—';
+    document.getElementById('wifiHotspotPassword').textContent = data.hotspot?.password || '—';
+    renderWifiQr(data.hotspot?.ssid, data.hotspot?.password);
+  } catch (err) {
+    console.error('loadWifiStatus:', err);
+  }
+}
+
+async function scanWifi() {
+  try {
+    const res = await fetch('/api/wifi/scan');
+    const data = await readJsonOrError(res);
+    if (!res.ok) {
+      throw new Error(data.error || res.statusText);
+    }
+    renderWifiNetworks(data.networks || []);
+  } catch (err) {
+    showStatus('WiFi scan failed: ' + err.message, 'error');
+  }
+}
+
+async function connectWifi() {
+  const ssid = (document.getElementById('wifiSsid')?.value || '').trim();
+  const password = document.getElementById('wifiPassword')?.value || '';
+  if (!ssid) {
+    showStatus('Enter an SSID to connect.', 'error');
+    return;
+  }
+  try {
+    const params = new URLSearchParams();
+    params.set('ssid', ssid);
+    if (password) {
+      params.set('password', password);
+    }
+    const res = await fetch('/api/wifi/connect?' + params.toString(), { method: 'POST' });
+    const data = await readJsonOrError(res);
+    if (!res.ok) {
+      throw new Error(data.error || res.statusText);
+    }
+    showStatus('Connected to WiFi network: ' + (data.connectedSsid || ssid), 'success');
+    loadWifiStatus();
+  } catch (err) {
+    showStatus('WiFi connect failed: ' + err.message, 'error');
+  }
+}
+
+async function setWifiMode(mode) {
+  try {
+    const params = new URLSearchParams();
+    params.set('mode', mode);
+    const res = await fetch('/api/wifi/mode?' + params.toString(), { method: 'POST' });
+    const data = await readJsonOrError(res);
+    if (!res.ok) {
+      throw new Error(data.error || res.statusText);
+    }
+    showStatus('WiFi mode set to ' + (data.mode || mode), 'success');
+    loadWifiStatus();
+  } catch (err) {
+    showStatus('Failed to switch WiFi mode: ' + err.message, 'error');
+  }
+}
+
+async function applyWifiFallback() {
+  try {
+    const res = await fetch('/api/wifi/fallback', { method: 'POST' });
+    const data = await readJsonOrError(res);
+    if (!res.ok) {
+      throw new Error(data.error || res.statusText);
+    }
+    showStatus('Fallback action: ' + (data.action || data.status || 'done'), 'success');
+    loadWifiStatus();
+  } catch (err) {
+    showStatus('Failed to apply fallback: ' + err.message, 'error');
+  }
+}
+
+document.getElementById('btnWifiModeClient')?.addEventListener('click', () => setWifiMode('client'));
+document.getElementById('btnWifiModeHotspot')?.addEventListener('click', () => setWifiMode('hotspot'));
+document.getElementById('btnWifiApplyFallback')?.addEventListener('click', applyWifiFallback);
+document.getElementById('btnWifiScan')?.addEventListener('click', scanWifi);
+document.getElementById('btnWifiConnect')?.addEventListener('click', connectWifi);
+
 // Initialize on page load
 loadSystems();
 loadPorts();
 loadConnections();
 loadUpdateStatus();
+loadWifiStatus();
+scanWifi();
 setInterval(loadConnections, 5000);
 setInterval(loadPorts, 5000);
 setInterval(loadUpdateStatus, 15000);
+setInterval(loadWifiStatus, 15000);
 connectEventStream();
 connectWebSocket();
 initThrottleFunctions();

@@ -162,6 +162,24 @@ You should see the panelsdcc-connect web interface where you can:
 - Test throttles and accessories
 - Monitor real-time messages
 
+### WiFi Mode Management (Bookworm+)
+
+On Raspberry Pi OS Bookworm and newer, panelsdcc-connect integrates with NetworkManager to manage WiFi mode:
+
+- **Client mode**: join your normal home/network WiFi.
+- **Hotspot mode**: bring up a managed fallback AP named `panels-hotspot-XXXX` (`XXXX` from the WiFi MAC).
+
+How it behaves:
+
+- The hotspot password is generated automatically at package install and is shown in the web UI.
+- The web UI includes a QR code so phones can join the hotspot quickly.
+- Existing WiFi configured during Raspberry Pi imaging/first boot remains valid as a normal NetworkManager connection.
+- If mode is client and no saved network can be connected after boot, fallback can activate the hotspot for recovery.
+
+Security note:
+
+- Treat this as a trusted local network management surface. Anyone with web access can view hotspot credentials and change WiFi mode/network settings.
+
 ## Service Management
 
 ### Start/Stop the Service

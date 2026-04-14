@@ -37,6 +37,8 @@ override_dh_auto_install:
 	chmod +x debian/tmp/usr/local/bin/jmri-install
 	cp scripts/panelsdcc-connect-updater debian/tmp/usr/local/bin/
 	chmod +x debian/tmp/usr/local/bin/panelsdcc-connect-updater
+	cp scripts/panelsdcc-connect-wifi debian/tmp/usr/local/bin/
+	chmod +x debian/tmp/usr/local/bin/panelsdcc-connect-wifi
 	
 	# sudoers fragment for web-triggered dpkg install (dcc-io -> updater script)
 	mkdir -p debian/tmp/etc/sudoers.d
@@ -55,6 +57,7 @@ override_dh_auto_install:
 	grep -q "JAR_FILENAME_PLACEHOLDER" debian/tmp/lib/systemd/system/panelsdcc-connect.service && \
 		echo "WARNING: Placeholder still found in service file!" || \
 		echo "Placeholder successfully replaced"
+	cp lib/systemd/system/panelsdcc-connect-wifi-fallback.service debian/tmp/lib/systemd/system/panelsdcc-connect-wifi-fallback.service
 
 override_dh_auto_clean:
 	# Use a local Maven repository in the build directory to avoid permission issues with fakeroot

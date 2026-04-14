@@ -445,3 +445,75 @@ h2 {
     cursor: not-allowed;
 }
 
+/* WiFi section */
+.wifi-section {
+    background: white;
+    padding: 20px;
+    border-radius: 4px;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.wifi-actions {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.wifi-qr-wrap {
+    margin-top: 14px;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: #fafafa;
+    max-width: 260px;
+}
+
+.wifi-qr-wrap img {
+    width: 220px;
+    height: 220px;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    background: white;
+}
+
+.wifi-hint {
+    color: #666;
+    font-size: 12px;
+    margin-top: 6px;
+}
+
+.wifi-client-config {
+    margin-top: 18px;
+    padding-top: 12px;
+    border-top: 1px solid #e1e1e1;
+}
+
+.wifi-client-config h3 {
+    margin: 0 0 8px 0;
+    color: #333;
+}
+
+.wifi-scan-results {
+    margin-top: 10px;
+    display: grid;
+    gap: 8px;
+}
+
+.wifi-network-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    background: #f8f9fa;
+    border: 1px solid #e2e2e2;
+    border-radius: 4px;
+}
+
+.wifi-network-meta {
+    color: #666;
+    font-size: 12px;
+}
+

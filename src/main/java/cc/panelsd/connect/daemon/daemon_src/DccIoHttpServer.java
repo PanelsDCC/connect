@@ -19,7 +19,9 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.StringJoiner;
 
@@ -35,6 +37,10 @@ import java.util.StringJoiner;
  *   <li>GET /api/update - update status JSON (from update-status.json)</li>
  *   <li>POST /api/update/check - refresh status from GitHub</li>
  *   <li>POST /api/update/install - queue install (requires sudo; see sudoers); returns 202</li>
+ *   <li>GET /api/wifi - wifi mode/status/hotspot credentials</li>
+ *   <li>GET /api/wifi/scan - nearby SSIDs from NetworkManager</li>
+ *   <li>POST /api/wifi/connect - join client network</li>
+ *   <li>POST /api/wifi/mode - switch hotspot/client mode</li>
  * </ul>
  */
 final class DccIoHttpServer {
@@ -59,6 +65,7 @@ final class DccIoHttpServer {
         server.createContext("/api/events", new EventsHandler()); // SSE endpoint for live events
         // Software update API (single prefix; subpaths routed in handler — HttpServer matches /api/update*)
         server.createContext("/api/update", new UpdateApiHandler());
+        server.createContext("/api/wifi", new WifiApiHandler());
         server.createContext("/static", new StaticFileHandler()); // Serve static files (CSS, JS)
         server.createContext("/", new WebUIHandler()); // Serve web UI
         server.setExecutor(null); // default executor
@@ -99,6 +106,36 @@ final class DccIoHttpServer {
                     + ". Ensure /etc/sudoers.d/panelsdcc-connect-updater allows dcc-io to run "
                     + script + " install --background without a password.");
         }
+    }
+
+    /**
+     * Runs the packaged WiFi helper script with sudo when daemon user is not root.
+     */
+    private static String runPanelsdccWifiCommand(String... args) throws IOException, InterruptedException {
+        String script = "/usr/local/bin/panelsdcc-connect-wifi";
+        List<String> cmd = new ArrayList<>();
+        if (!"root".equals(System.getProperty("user.name"))) {
+            cmd.add("sudo");
+            cmd.add("-n");
+        }
+        cmd.add(script);
+        for (String arg : args) {
+            cmd.add(arg);
+        }
+        ProcessBuilder pb = new ProcessBuilder(cmd);
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+        int code = p.waitFor();
+        if (code != 0) {
+            throw new IOException("wifi command failed (exit " + code + "): " + out
+                    + ". Ensure /etc/sudoers.d/panelsdcc-connect-updater allows dcc-io to run "
+                    + script + " commands without a password.");
+        }
+        if (out.isEmpty()) {
+            return "{\"status\":\"ok\"}";
+        }
+        return out;
     }
 
     private abstract class JsonHandler implements HttpHandler {
@@ -635,6 +672,115 @@ final class DccIoHttpServer {
                 return;
             }
             sendJsonRaw(exchange, 200, ConnectUpdater.getStatusJsonString());
+        }
+    }
+
+    private final class WifiApiHandler extends JsonHandler {
+        @Override
+        protected void handleJson(HttpExchange exchange) throws IOException {
+            String method = exchange.getRequestMethod();
+            String path = exchange.getRequestURI().getPath();
+            if (path == null) {
+                path = "";
+            }
+
+            if (path.endsWith("/scan")) {
+                if (!"GET".equalsIgnoreCase(method) && !"POST".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                if ("POST".equalsIgnoreCase(method)) {
+                    try (InputStream is = exchange.getRequestBody()) {
+                        is.readAllBytes();
+                    }
+                }
+                try {
+                    sendJsonRaw(exchange, 200, runPanelsdccWifiCommand("scan"));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    sendJson(exchange, 500, "{\"error\":\"Interrupted\"}");
+                }
+                return;
+            }
+
+            if (path.endsWith("/connect")) {
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                try (InputStream is = exchange.getRequestBody()) {
+                    is.readAllBytes();
+                }
+                Map<String, String> q = queryParams(exchange.getRequestURI());
+                String ssid = q.get("ssid");
+                String password = q.getOrDefault("password", "");
+                if (ssid == null || ssid.isEmpty()) {
+                    sendJson(exchange, 400, "{\"error\":\"Missing ssid\"}");
+                    return;
+                }
+                try {
+                    sendJsonRaw(exchange, 200, runPanelsdccWifiCommand("connect", ssid, password));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    sendJson(exchange, 500, "{\"error\":\"Interrupted\"}");
+                }
+                return;
+            }
+
+            if (path.endsWith("/mode")) {
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                try (InputStream is = exchange.getRequestBody()) {
+                    is.readAllBytes();
+                }
+                Map<String, String> q = queryParams(exchange.getRequestURI());
+                String mode = q.get("mode");
+                if (mode == null || mode.isEmpty()) {
+                    sendJson(exchange, 400, "{\"error\":\"Missing mode\"}");
+                    return;
+                }
+                try {
+                    sendJsonRaw(exchange, 200, runPanelsdccWifiCommand("set-mode", mode));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    sendJson(exchange, 500, "{\"error\":\"Interrupted\"}");
+                }
+                return;
+            }
+
+            if (path.endsWith("/fallback")) {
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                try (InputStream is = exchange.getRequestBody()) {
+                    is.readAllBytes();
+                }
+                try {
+                    sendJsonRaw(exchange, 200, runPanelsdccWifiCommand("apply-fallback"));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    sendJson(exchange, 500, "{\"error\":\"Interrupted\"}");
+                }
+                return;
+            }
+
+            if (!"/api/wifi".equals(path) && !"/api/wifi/".equals(path)) {
+                sendJson(exchange, 404, "{\"error\":\"Not found\"}");
+                return;
+            }
+            if (!"GET".equalsIgnoreCase(method)) {
+                sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                return;
+            }
+            try {
+                sendJsonRaw(exchange, 200, runPanelsdccWifiCommand("status"));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                sendJson(exchange, 500, "{\"error\":\"Interrupted\"}");
+            }
         }
     }
 

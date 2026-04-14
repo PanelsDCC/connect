@@ -35,6 +35,13 @@ mkdir -p /etc/panelsdcc-connect
 chown root:root /etc/panelsdcc-connect
 chmod 755 /etc/panelsdcc-connect
 
+# Ensure WiFi hotspot secrets/profile exist on first install (Bookworm+ NetworkManager path).
+if [ -x /usr/local/bin/panelsdcc-connect-wifi ]; then
+    /usr/local/bin/panelsdcc-connect-wifi ensure-hotspot-profile >/dev/null 2>&1 || {
+        echo "WARNING: Unable to pre-create hotspot profile. WiFi helper will retry on first use."
+    }
+fi
+
 # Reload systemd to pick up new service file
 systemctl daemon-reload
 
@@ -63,6 +70,12 @@ if systemctl is-enabled panelsdcc-connect >/dev/null 2>&1; then
     echo "Service already enabled."
 else
     systemctl enable panelsdcc-connect
+fi
+
+if systemctl is-enabled panelsdcc-connect-wifi-fallback >/dev/null 2>&1; then
+    echo "WiFi fallback service already enabled."
+else
+    systemctl enable panelsdcc-connect-wifi-fallback || true
 fi
 
 if systemctl is-active panelsdcc-connect >/dev/null 2>&1; then

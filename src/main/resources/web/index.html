@@ -19,6 +19,40 @@
             <button type="button" id="btnInstallUpdate" class="btn btn-secondary" disabled>Install update</button>
         </div>
     </div>
+
+    <div class="wifi-section">
+        <h2>WiFi configuration</h2>
+        <p class="update-line"><span class="label">Current mode:</span> <span id="wifiMode">—</span></p>
+        <p class="update-line"><span class="label">WiFi state:</span> <span id="wifiState">—</span></p>
+        <p class="update-line"><span class="label">Connected network:</span> <span id="wifiConnection">—</span></p>
+        <p class="update-line"><span class="label">Fallback hotspot:</span> <span id="wifiHotspotSsid">—</span></p>
+        <p class="update-line"><span class="label">Hotspot password:</span> <span id="wifiHotspotPassword">—</span></p>
+        <div class="wifi-actions">
+            <button type="button" id="btnWifiModeClient" class="btn btn-primary">Switch to client mode</button>
+            <button type="button" id="btnWifiModeHotspot" class="btn btn-secondary">Switch to hotspot mode</button>
+            <button type="button" id="btnWifiApplyFallback" class="btn btn-secondary">Apply fallback now</button>
+        </div>
+        <div class="wifi-qr-wrap">
+            <img id="wifiQrImage" alt="WiFi join QR code" style="display:none;" />
+            <p id="wifiQrHint" class="wifi-hint">QR appears when hotspot credentials are available.</p>
+        </div>
+        <div class="wifi-client-config">
+            <h3>Client networks</h3>
+            <div class="wifi-actions">
+                <button type="button" id="btnWifiScan" class="btn btn-primary">Scan networks</button>
+            </div>
+            <div class="form-group">
+                <label>SSID:</label>
+                <input type="text" id="wifiSsid" placeholder="Select from scan results or type manually">
+            </div>
+            <div class="form-group">
+                <label>Password:</label>
+                <input type="password" id="wifiPassword" placeholder="Leave blank for open networks">
+            </div>
+            <button type="button" id="btnWifiConnect" class="btn btn-primary">Connect</button>
+            <div id="wifiScanResults" class="wifi-scan-results"></div>
+        </div>
+    </div>
     
     <div class="form-container">
         <div class="discovery-section">
