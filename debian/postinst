@@ -16,7 +16,8 @@ fi
 # i2c: for I2C bus access (Raspberry Pi)
 # spi: for SPI bus access (Raspberry Pi)
 # input: for input devices (sometimes needed)
-for group in dialout plugdev gpio i2c spi input; do
+# netdev: for NetworkManager/nmcli when not relying solely on systemd SupplementaryGroups
+for group in dialout plugdev gpio i2c spi input netdev; do
     if getent group "$group" >/dev/null 2>&1; then
         if ! id -nG dcc-io | grep -qw "$group"; then
             echo "Adding dcc-io user to $group group for hardware access..."
@@ -34,6 +35,13 @@ chmod 755 /var/lib/panelsdcc-connect
 mkdir -p /etc/panelsdcc-connect
 chown root:root /etc/panelsdcc-connect
 chmod 755 /etc/panelsdcc-connect
+
+# Ensure WiFi hotspot secrets/profile exist on first install (Bookworm+ NetworkManager path).
+if [ -x /usr/local/bin/panelsdcc-connect-wifi ]; then
+    /usr/local/bin/panelsdcc-connect-wifi ensure-hotspot-profile >/dev/null 2>&1 || {
+        echo "WARNING: Unable to pre-create hotspot profile. WiFi helper will retry on first use."
+    }
+fi
 
 # Reload systemd to pick up new service file
 systemctl daemon-reload
@@ -65,8 +73,15 @@ else
     systemctl enable panelsdcc-connect
 fi
 
+if systemctl is-enabled panelsdcc-connect-wifi-fallback >/dev/null 2>&1; then
+    echo "WiFi fallback service already enabled."
+else
+    systemctl enable panelsdcc-connect-wifi-fallback || true
+fi
+
 if systemctl is-active panelsdcc-connect >/dev/null 2>&1; then
-    echo "Service already running."
+    echo "Restarting panelsdcc-connect to apply group membership (e.g. netdev for WiFi)..."
+    systemctl restart panelsdcc-connect || echo "Failed to restart service. Check logs with: journalctl -u panelsdcc-connect"
 else
     echo "Starting panelsdcc-connect service..."
     systemctl start panelsdcc-connect || echo "Failed to start service. Check logs with: journalctl -u panelsdcc-connect"

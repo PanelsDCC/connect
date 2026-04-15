@@ -1,0 +1,440 @@
+#!/bin/bash
+set -euo pipefail
+
+STATE_DIR="/var/lib/panelsdcc-connect"
+POLICY_FILE="${STATE_DIR}/wifi-config.json"
+SECRETS_FILE="${STATE_DIR}/wifi-hotspot-secrets.json"
+HOTSPOT_CONN_NAME="panelsdcc-hotspot"
+
+json_error() {
+  local message="${1:-Unknown error}"
+  jq -n --arg error "$message" '{"error":$error}'
+}
+
+json_ok() {
+  local message="${1:-ok}"
+  jq -n --arg status "ok" --arg message "$message" '{"status":$status,"message":$message}'
+}
+
+require_cmd() {
+  local cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    json_error "Required command not found: $cmd"
+    exit 1
+  fi
+}
+
+ensure_state_dir() {
+  mkdir -p "$STATE_DIR"
+  chmod 755 "$STATE_DIR" || true
+}
+
+ensure_policy_file() {
+  ensure_state_dir
+  if [ ! -f "$POLICY_FILE" ]; then
+    cat > "$POLICY_FILE" <<'EOF'
+{
+  "mode": "client",
+  "fallbackEnabled": true,
+  "skipFallbackWhenEthernetUp": true,
+  "fallbackTimeoutSeconds": 20
+}
+EOF
+  fi
+  if id -u dcc-io >/dev/null 2>&1; then
+    chown dcc-io:dcc-io "$POLICY_FILE" || true
+  fi
+  chmod 664 "$POLICY_FILE" || true
+}
+
+get_wifi_iface() {
+  nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="wifi"{print $1; exit}'
+}
+
+get_wifi_mac_suffix() {
+  local iface="$1"
+  local mac
+  mac="$(cat "/sys/class/net/${iface}/address" 2>/dev/null | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+  if [ -z "$mac" ]; then
+    echo "0000"
+    return
+  fi
+  echo "${mac: -4}"
+}
+
+generate_password() {
+  # Avoid head|pipefail SIGPIPE (exit 141) by consuming full input with cut.
+  # 64 random bytes base64-encode to enough alnum chars for a 16-char password.
+  dd if=/dev/urandom bs=64 count=1 status=none | base64 | tr -dc 'A-Za-z0-9' | cut -c1-16
+}
+
+ensure_hotspot_secrets() {
+  ensure_state_dir
+  local iface
+  iface="$(get_wifi_iface)"
+  if [ -z "$iface" ]; then
+    json_error "No WiFi interface found"
+    exit 1
+  fi
+
+  local suffix ssid password
+  suffix="$(get_wifi_mac_suffix "$iface")"
+  ssid="panels-hotspot-${suffix}"
+
+  if [ -f "$SECRETS_FILE" ]; then
+    local existing_ssid existing_password
+    existing_ssid="$(jq -r '.ssid // empty' "$SECRETS_FILE" 2>/dev/null || true)"
+    existing_password="$(jq -r '.password // empty' "$SECRETS_FILE" 2>/dev/null || true)"
+    if [ -n "$existing_ssid" ] && [ -n "$existing_password" ]; then
+      return
+    fi
+  fi
+
+  password="$(generate_password)"
+  jq -n \
+    --arg ssid "$ssid" \
+    --arg password "$password" \
+    --arg connectionName "$HOTSPOT_CONN_NAME" \
+    --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{"ssid":$ssid,"password":$password,"connectionName":$connectionName,"generatedAt":$generatedAt}' > "$SECRETS_FILE"
+
+  if getent group dcc-io >/dev/null 2>&1; then
+    chown root:dcc-io "$SECRETS_FILE" || true
+  else
+    chown root:root "$SECRETS_FILE" || true
+  fi
+  chmod 640 "$SECRETS_FILE" || true
+}
+
+hotspot_field() {
+  local field="$1"
+  jq -r --arg field "$field" '.[$field] // empty' "$SECRETS_FILE"
+}
+
+set_policy_mode() {
+  local mode="$1"
+  local tmp
+  ensure_policy_file
+  tmp="$(mktemp)"
+  jq --arg mode "$mode" '.mode=$mode' "$POLICY_FILE" > "$tmp"
+  mv "$tmp" "$POLICY_FILE"
+  if id -u dcc-io >/dev/null 2>&1; then
+    chown dcc-io:dcc-io "$POLICY_FILE" || true
+  fi
+  chmod 664 "$POLICY_FILE" || true
+}
+
+ensure_hotspot_profile() {
+  ensure_policy_file
+  ensure_hotspot_secrets
+
+  local iface ssid password
+  iface="$(get_wifi_iface)"
+  ssid="$(hotspot_field ssid)"
+  password="$(hotspot_field password)"
+
+  if [ -z "$iface" ] || [ -z "$ssid" ] || [ -z "$password" ]; then
+    json_error "Cannot ensure hotspot profile (missing WiFi interface or secrets)"
+    exit 1
+  fi
+
+  if nmcli -t -f NAME connection show | grep -Fxq "$HOTSPOT_CONN_NAME"; then
+    nmcli connection modify "$HOTSPOT_CONN_NAME" \
+      connection.id "$HOTSPOT_CONN_NAME" \
+      connection.interface-name "$iface" \
+      connection.autoconnect no \
+      802-11-wireless.mode ap \
+      802-11-wireless.ssid "$ssid" \
+      802-11-wireless-security.key-mgmt wpa-psk \
+      802-11-wireless-security.psk "$password" \
+      ipv4.method shared \
+      ipv6.method ignore >/dev/null
+  else
+    nmcli connection add type wifi ifname "$iface" con-name "$HOTSPOT_CONN_NAME" ssid "$ssid" >/dev/null
+    nmcli connection modify "$HOTSPOT_CONN_NAME" \
+      connection.interface-name "$iface" \
+      connection.autoconnect no \
+      802-11-wireless.mode ap \
+      802-11-wireless-security.key-mgmt wpa-psk \
+      802-11-wireless-security.psk "$password" \
+      ipv4.method shared \
+      ipv6.method ignore >/dev/null
+  fi
+}
+
+status() {
+  ensure_policy_file
+  ensure_hotspot_secrets
+
+  local mode fallback_enabled skip_eth timeout
+  mode="$(jq -r '.mode // "client"' "$POLICY_FILE")"
+  fallback_enabled="$(jq -r '.fallbackEnabled // true' "$POLICY_FILE")"
+  skip_eth="$(jq -r '.skipFallbackWhenEthernetUp // true' "$POLICY_FILE")"
+  timeout="$(jq -r '.fallbackTimeoutSeconds // 20' "$POLICY_FILE")"
+
+  local wifi_iface wifi_state wifi_connection wifi_connection_profile wifi_connection_is_hotspot eth_connected
+  wifi_iface="$(get_wifi_iface)"
+  wifi_state=""
+  wifi_connection=""
+  wifi_connection_profile=""
+  wifi_connection_is_hotspot="false"
+  if [ -n "$wifi_iface" ]; then
+    wifi_state="$(nmcli -t -f DEVICE,STATE device status | awk -F: -v iface="$wifi_iface" '$1==iface{print $2; exit}')"
+    wifi_connection_profile="$(nmcli -t -f DEVICE,CONNECTION device status | awk -F: -v iface="$wifi_iface" '$1==iface{print $2; exit}')"
+    wifi_connection="$wifi_connection_profile"
+    if [ "$wifi_connection_profile" = "$HOTSPOT_CONN_NAME" ]; then
+      wifi_connection_is_hotspot="true"
+      local hotspot_ssid
+      hotspot_ssid="$(hotspot_field ssid)"
+      if [ -n "$hotspot_ssid" ]; then
+        wifi_connection="$hotspot_ssid"
+      fi
+    fi
+  fi
+  eth_connected="false"
+  if nmcli -t -f TYPE,STATE device status | awk -F: '$1=="ethernet" && $2=="connected"{found=1} END{exit !found}'; then
+    eth_connected="true"
+  fi
+
+  local known_profiles known active active_profile
+  known_profiles="$(nmcli -m multiline -t -f NAME,TYPE,AUTOCONNECT connection show | \
+    awk -v hotspot="$HOTSPOT_CONN_NAME" '
+      /^NAME:/ { name=substr($0, index($0, ":")+1); next }
+      /^TYPE:/ { type=substr($0, index($0, ":")+1); next }
+      /^AUTOCONNECT:/ {
+        autoconnect=substr($0, index($0, ":")+1);
+        if (type=="802-11-wireless" && name!=hotspot) {
+          print name "|" autoconnect
+        }
+      }')"
+  known=""
+  while IFS='|' read -r profile autoconnect; do
+    [ -z "$profile" ] && continue
+    local ssid
+    ssid="$(nmcli -g 802-11-wireless.ssid connection show "$profile" 2>/dev/null | awk 'NR==1{print; exit}')"
+    [ -z "$ssid" ] && ssid="$profile"
+    known+="${profile}|${ssid}|${autoconnect}"$'\n'
+  done <<< "$known_profiles"
+
+  active_profile="$(nmcli -m multiline -t -f NAME,TYPE connection show --active | \
+    awk '
+      /^NAME:/ { name=substr($0, index($0, ":")+1); next }
+      /^TYPE:/ {
+        type=substr($0, index($0, ":")+1);
+        if (type=="802-11-wireless") {
+          print name;
+          exit;
+        }
+      }')"
+  active="$active_profile"
+  if [ -n "$active_profile" ]; then
+    local active_ssid
+    active_ssid="$(nmcli -g 802-11-wireless.ssid connection show "$active_profile" 2>/dev/null | awk 'NR==1{print; exit}')"
+    [ -n "$active_ssid" ] && active="$active_ssid"
+  fi
+
+  local networks_json
+  networks_json="$(printf '%s\n' "$known" | jq -R -s '
+    split("\n")
+    | map(select(length > 0))
+    | map(split("|"))
+    | map({profile: .[0], ssid: .[1], autoconnect: (.[2] == "yes")})
+    | unique_by(.ssid)
+    | sort_by(.ssid)
+  ')"
+
+  jq -n \
+    --arg mode "$mode" \
+    --argjson fallbackEnabled "$fallback_enabled" \
+    --argjson skipFallbackWhenEthernetUp "$skip_eth" \
+    --argjson fallbackTimeoutSeconds "$timeout" \
+    --arg wifiInterface "$wifi_iface" \
+    --arg wifiState "$wifi_state" \
+    --arg wifiConnection "$wifi_connection" \
+    --arg wifiConnectionProfile "$wifi_connection_profile" \
+    --argjson wifiConnectionIsHotspot "$wifi_connection_is_hotspot" \
+    --argjson ethernetConnected "$eth_connected" \
+    --arg hotspotSsid "$(hotspot_field ssid)" \
+    --arg hotspotPassword "$(hotspot_field password)" \
+    --arg hotspotConnectionName "$HOTSPOT_CONN_NAME" \
+    --arg activeWifiConnection "$active" \
+    --arg activeWifiConnectionProfile "$active_profile" \
+    --argjson knownClientNetworks "$networks_json" \
+    '{
+      mode: $mode,
+      fallbackEnabled: $fallbackEnabled,
+      skipFallbackWhenEthernetUp: $skipFallbackWhenEthernetUp,
+      fallbackTimeoutSeconds: $fallbackTimeoutSeconds,
+      wifiInterface: $wifiInterface,
+      wifiState: $wifiState,
+      wifiConnection: $wifiConnection,
+      wifiConnectionProfile: $wifiConnectionProfile,
+      wifiConnectionIsHotspot: $wifiConnectionIsHotspot,
+      ethernetConnected: $ethernetConnected,
+      hotspot: {
+        ssid: $hotspotSsid,
+        password: $hotspotPassword,
+        connectionName: $hotspotConnectionName
+      },
+      activeWifiConnection: $activeWifiConnection,
+      activeWifiConnectionProfile: $activeWifiConnectionProfile,
+      knownClientNetworks: $knownClientNetworks
+    }'
+}
+
+scan() {
+  ensure_hotspot_secrets
+  local iface
+  iface="$(get_wifi_iface)"
+  if [ -z "$iface" ]; then
+    json_error "No WiFi interface found"
+    exit 1
+  fi
+
+  local rows
+  rows="$(nmcli -m multiline -t -f IN-USE,SSID,SIGNAL,SECURITY device wifi list ifname "$iface" --rescan yes | \
+    awk '
+      /^IN-USE:/ { inuse=substr($0, index($0, ":")+1); next }
+      /^SSID:/ { ssid=substr($0, index($0, ":")+1); next }
+      /^SIGNAL:/ { signal=substr($0, index($0, ":")+1); next }
+      /^SECURITY:/ {
+        security=substr($0, index($0, ":")+1);
+        if (length(ssid) > 0) {
+          printf "%s\t%s\t%s\t%s\n", inuse, ssid, signal, security;
+        }
+      }')"
+  local data
+  data="$(printf '%s\n' "$rows" | jq -R -s '
+    split("\n")
+    | map(select(length > 0))
+    | map(split("\t"))
+    | map(select((.[1] // "") | length > 0))
+    | map({
+      active: (.[0] == "*"),
+      ssid: .[1],
+      signal: ((.[2] // "0") | tonumber? // 0),
+      security: (.[3] // "")
+    })
+    | unique_by(.ssid)
+    | sort_by(-.signal)
+  ')"
+  jq -n --argjson networks "$data" '{"networks":$networks}'
+}
+
+connect_client() {
+  local ssid="${1:-}"
+  local password="${2:-}"
+  if [ -z "$ssid" ]; then
+    json_error "SSID is required"
+    exit 1
+  fi
+
+  local iface
+  iface="$(get_wifi_iface)"
+  if [ -z "$iface" ]; then
+    json_error "No WiFi interface found"
+    exit 1
+  fi
+
+  if [ -n "$password" ]; then
+    nmcli device wifi connect "$ssid" password "$password" ifname "$iface" >/dev/null
+  else
+    nmcli device wifi connect "$ssid" ifname "$iface" >/dev/null
+  fi
+  set_policy_mode "client"
+  jq -n --arg status "ok" --arg connectedSsid "$ssid" '{"status":$status,"connectedSsid":$connectedSsid}'
+}
+
+set_mode() {
+  local mode="${1:-}"
+  if [ "$mode" != "client" ] && [ "$mode" != "hotspot" ]; then
+    json_error "mode must be client or hotspot"
+    exit 1
+  fi
+  if [ "$mode" = "hotspot" ]; then
+    ensure_hotspot_profile
+    nmcli connection up "$HOTSPOT_CONN_NAME" >/dev/null
+  else
+    nmcli connection down "$HOTSPOT_CONN_NAME" >/dev/null 2>&1 || true
+    local iface
+    iface="$(get_wifi_iface)"
+    if [ -n "$iface" ]; then
+      nmcli device connect "$iface" >/dev/null 2>&1 || true
+    fi
+  fi
+  set_policy_mode "$mode"
+  jq -n --arg status "ok" --arg mode "$mode" '{"status":$status,"mode":$mode}'
+}
+
+apply_fallback() {
+  ensure_policy_file
+  ensure_hotspot_profile
+
+  local mode fallback_enabled skip_eth timeout
+  mode="$(jq -r '.mode // "client"' "$POLICY_FILE")"
+  fallback_enabled="$(jq -r '.fallbackEnabled // true' "$POLICY_FILE")"
+  skip_eth="$(jq -r '.skipFallbackWhenEthernetUp // true' "$POLICY_FILE")"
+  timeout="$(jq -r '.fallbackTimeoutSeconds // 20' "$POLICY_FILE")"
+
+  if [ "$mode" != "client" ]; then
+    jq -n '{"status":"ok","action":"skipped","reason":"mode-not-client"}'
+    return
+  fi
+  if [ "$fallback_enabled" != "true" ]; then
+    jq -n '{"status":"ok","action":"skipped","reason":"fallback-disabled"}'
+    return
+  fi
+  if [ "$skip_eth" = "true" ] && nmcli -t -f TYPE,STATE device status | awk -F: '$1=="ethernet" && $2=="connected"{found=1} END{exit !found}'; then
+    jq -n '{"status":"ok","action":"skipped","reason":"ethernet-connected"}'
+    return
+  fi
+
+  local iface
+  iface="$(get_wifi_iface)"
+  if [ -z "$iface" ]; then
+    json_error "No WiFi interface found"
+    exit 1
+  fi
+
+  local i state
+  for (( i=0; i<timeout; i++ )); do
+    state="$(nmcli -t -f DEVICE,STATE device status | awk -F: -v iface="$iface" '$1==iface{print $2; exit}')"
+    if [ "$state" = "connected" ]; then
+      jq -n '{"status":"ok","action":"none","reason":"wifi-connected"}'
+      return
+    fi
+    sleep 1
+  done
+
+  nmcli connection up "$HOTSPOT_CONN_NAME" >/dev/null
+  jq -n --arg ssid "$(hotspot_field ssid)" '{"status":"ok","action":"hotspot-activated","ssid":$ssid}'
+}
+
+require_cmd nmcli
+require_cmd jq
+
+case "${1:-}" in
+  status)
+    status
+    ;;
+  scan)
+    scan
+    ;;
+  connect)
+    connect_client "${2:-}" "${3:-}"
+    ;;
+  set-mode)
+    set_mode "${2:-}"
+    ;;
+  ensure-hotspot-profile)
+    ensure_hotspot_profile
+    json_ok "Hotspot profile ensured"
+    ;;
+  apply-fallback)
+    apply_fallback
+    ;;
+  *)
+    json_error "Usage: panelsdcc-connect-wifi status|scan|connect <ssid> [password]|set-mode <client|hotspot>|ensure-hotspot-profile|apply-fallback"
+    exit 1
+    ;;
+esac

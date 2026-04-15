@@ -14,6 +14,16 @@ if systemctl is-enabled panelsdcc-connect >/dev/null 2>&1; then
     systemctl disable panelsdcc-connect
 fi
 
+if systemctl is-active panelsdcc-connect-wifi-fallback >/dev/null 2>&1; then
+    echo "Stopping panelsdcc-connect-wifi-fallback service..."
+    systemctl stop panelsdcc-connect-wifi-fallback
+fi
+
+if systemctl is-enabled panelsdcc-connect-wifi-fallback >/dev/null 2>&1; then
+    echo "Disabling panelsdcc-connect-wifi-fallback service..."
+    systemctl disable panelsdcc-connect-wifi-fallback
+fi
+
 # DEBHELPER
 exit 0
 
