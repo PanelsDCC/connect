@@ -63,7 +63,9 @@ get_wifi_mac_suffix() {
 }
 
 generate_password() {
-  tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16
+  # Avoid head|pipefail SIGPIPE (exit 141) by consuming full input with cut.
+  # 64 random bytes base64-encode to enough alnum chars for a 16-char password.
+  dd if=/dev/urandom bs=64 count=1 status=none | base64 | tr -dc 'A-Za-z0-9' | cut -c1-16
 }
 
 ensure_hotspot_secrets() {
@@ -170,31 +172,75 @@ status() {
   skip_eth="$(jq -r '.skipFallbackWhenEthernetUp // true' "$POLICY_FILE")"
   timeout="$(jq -r '.fallbackTimeoutSeconds // 20' "$POLICY_FILE")"
 
-  local wifi_iface wifi_state wifi_connection eth_connected
+  local wifi_iface wifi_state wifi_connection wifi_connection_profile wifi_connection_is_hotspot eth_connected
   wifi_iface="$(get_wifi_iface)"
   wifi_state=""
   wifi_connection=""
+  wifi_connection_profile=""
+  wifi_connection_is_hotspot="false"
   if [ -n "$wifi_iface" ]; then
     wifi_state="$(nmcli -t -f DEVICE,STATE device status | awk -F: -v iface="$wifi_iface" '$1==iface{print $2; exit}')"
-    wifi_connection="$(nmcli -t -f DEVICE,CONNECTION device status | awk -F: -v iface="$wifi_iface" '$1==iface{print $2; exit}')"
+    wifi_connection_profile="$(nmcli -t -f DEVICE,CONNECTION device status | awk -F: -v iface="$wifi_iface" '$1==iface{print $2; exit}')"
+    wifi_connection="$wifi_connection_profile"
+    if [ "$wifi_connection_profile" = "$HOTSPOT_CONN_NAME" ]; then
+      wifi_connection_is_hotspot="true"
+      local hotspot_ssid
+      hotspot_ssid="$(hotspot_field ssid)"
+      if [ -n "$hotspot_ssid" ]; then
+        wifi_connection="$hotspot_ssid"
+      fi
+    fi
   fi
   eth_connected="false"
   if nmcli -t -f TYPE,STATE device status | awk -F: '$1=="ethernet" && $2=="connected"{found=1} END{exit !found}'; then
     eth_connected="true"
   fi
 
-  local known active
-  known="$(nmcli -t --separator '|' -f NAME,TYPE,AUTOCONNECT connection show | \
-    awk -F'|' -v hotspot="$HOTSPOT_CONN_NAME" '$2=="802-11-wireless" && $1!=hotspot {print $1 "|" $3}')"
-  active="$(nmcli -t --separator '|' -f NAME,TYPE connection show --active | \
-    awk -F'|' '$2=="802-11-wireless" {print $1}' | head -n1)"
+  local known_profiles known active active_profile
+  known_profiles="$(nmcli -m multiline -t -f NAME,TYPE,AUTOCONNECT connection show | \
+    awk -v hotspot="$HOTSPOT_CONN_NAME" '
+      /^NAME:/ { name=substr($0, index($0, ":")+1); next }
+      /^TYPE:/ { type=substr($0, index($0, ":")+1); next }
+      /^AUTOCONNECT:/ {
+        autoconnect=substr($0, index($0, ":")+1);
+        if (type=="802-11-wireless" && name!=hotspot) {
+          print name "|" autoconnect
+        }
+      }')"
+  known=""
+  while IFS='|' read -r profile autoconnect; do
+    [ -z "$profile" ] && continue
+    local ssid
+    ssid="$(nmcli -g 802-11-wireless.ssid connection show "$profile" 2>/dev/null | awk 'NR==1{print; exit}')"
+    [ -z "$ssid" ] && ssid="$profile"
+    known+="${profile}|${ssid}|${autoconnect}"$'\n'
+  done <<< "$known_profiles"
+
+  active_profile="$(nmcli -m multiline -t -f NAME,TYPE connection show --active | \
+    awk '
+      /^NAME:/ { name=substr($0, index($0, ":")+1); next }
+      /^TYPE:/ {
+        type=substr($0, index($0, ":")+1);
+        if (type=="802-11-wireless") {
+          print name;
+          exit;
+        }
+      }')"
+  active="$active_profile"
+  if [ -n "$active_profile" ]; then
+    local active_ssid
+    active_ssid="$(nmcli -g 802-11-wireless.ssid connection show "$active_profile" 2>/dev/null | awk 'NR==1{print; exit}')"
+    [ -n "$active_ssid" ] && active="$active_ssid"
+  fi
 
   local networks_json
   networks_json="$(printf '%s\n' "$known" | jq -R -s '
     split("\n")
     | map(select(length > 0))
     | map(split("|"))
-    | map({name: .[0], autoconnect: (.[1] == "yes")})
+    | map({profile: .[0], ssid: .[1], autoconnect: (.[2] == "yes")})
+    | unique_by(.ssid)
+    | sort_by(.ssid)
   ')"
 
   jq -n \
@@ -205,11 +251,14 @@ status() {
     --arg wifiInterface "$wifi_iface" \
     --arg wifiState "$wifi_state" \
     --arg wifiConnection "$wifi_connection" \
+    --arg wifiConnectionProfile "$wifi_connection_profile" \
+    --argjson wifiConnectionIsHotspot "$wifi_connection_is_hotspot" \
     --argjson ethernetConnected "$eth_connected" \
     --arg hotspotSsid "$(hotspot_field ssid)" \
     --arg hotspotPassword "$(hotspot_field password)" \
     --arg hotspotConnectionName "$HOTSPOT_CONN_NAME" \
     --arg activeWifiConnection "$active" \
+    --arg activeWifiConnectionProfile "$active_profile" \
     --argjson knownClientNetworks "$networks_json" \
     '{
       mode: $mode,
@@ -219,6 +268,8 @@ status() {
       wifiInterface: $wifiInterface,
       wifiState: $wifiState,
       wifiConnection: $wifiConnection,
+      wifiConnectionProfile: $wifiConnectionProfile,
+      wifiConnectionIsHotspot: $wifiConnectionIsHotspot,
       ethernetConnected: $ethernetConnected,
       hotspot: {
         ssid: $hotspotSsid,
@@ -226,6 +277,7 @@ status() {
         connectionName: $hotspotConnectionName
       },
       activeWifiConnection: $activeWifiConnection,
+      activeWifiConnectionProfile: $activeWifiConnectionProfile,
       knownClientNetworks: $knownClientNetworks
     }'
 }
@@ -240,12 +292,22 @@ scan() {
   fi
 
   local rows
-  rows="$(nmcli -t --separator '|' -f IN-USE,SSID,SIGNAL,SECURITY device wifi list ifname "$iface" --rescan yes)"
+  rows="$(nmcli -m multiline -t -f IN-USE,SSID,SIGNAL,SECURITY device wifi list ifname "$iface" --rescan yes | \
+    awk '
+      /^IN-USE:/ { inuse=substr($0, index($0, ":")+1); next }
+      /^SSID:/ { ssid=substr($0, index($0, ":")+1); next }
+      /^SIGNAL:/ { signal=substr($0, index($0, ":")+1); next }
+      /^SECURITY:/ {
+        security=substr($0, index($0, ":")+1);
+        if (length(ssid) > 0) {
+          printf "%s\t%s\t%s\t%s\n", inuse, ssid, signal, security;
+        }
+      }')"
   local data
   data="$(printf '%s\n' "$rows" | jq -R -s '
     split("\n")
     | map(select(length > 0))
-    | map(split("|"))
+    | map(split("\t"))
     | map(select((.[1] // "") | length > 0))
     | map({
       active: (.[0] == "*"),

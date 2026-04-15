@@ -57,7 +57,8 @@ override_dh_auto_install:
 	grep -q "JAR_FILENAME_PLACEHOLDER" debian/tmp/lib/systemd/system/panelsdcc-connect.service && \
 		echo "WARNING: Placeholder still found in service file!" || \
 		echo "Placeholder successfully replaced"
-	cp lib/systemd/system/panelsdcc-connect-wifi-fallback.service debian/tmp/lib/systemd/system/panelsdcc-connect-wifi-fallback.service
+	# panelsdcc-connect-wifi-fallback.service is installed by dh_install from lib/systemd/system/
+	# (do not copy it into debian/tmp — that leaves an unconsumed file and dh_missing fails)
 
 override_dh_auto_clean:
 	# Use a local Maven repository in the build directory to avoid permission issues with fakeroot

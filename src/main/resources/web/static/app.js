@@ -1,6 +1,60 @@
 let systems = [];
 let ports = [];
 
+const PAGE_HASHES = ['#dcc', '#wifi', '#updates'];
+
+function ensureDefaultPageHash() {
+  if (!PAGE_HASHES.includes(window.location.hash)) {
+    window.history.replaceState(null, '', '#dcc');
+  }
+}
+
+function currentPageFromHash() {
+  return PAGE_HASHES.includes(window.location.hash) ? window.location.hash.slice(1) : 'dcc';
+}
+
+function updatePageSectionState() {
+  const current = currentPageFromHash();
+  document.querySelectorAll('.page-section').forEach((section) => {
+    const isActive = section.getAttribute('data-page') === current;
+    section.classList.toggle('is-active', isActive);
+  });
+}
+
+function updatePageNavState() {
+  const current = currentPageFromHash();
+  document.querySelectorAll('[data-page-link]').forEach((link) => {
+    const isActive = link.getAttribute('data-page-link') === current;
+    link.classList.toggle('is-active', isActive);
+  });
+}
+
+function setPageHash(hash) {
+  if (window.location.hash === hash) {
+    updatePageSectionState();
+    updatePageNavState();
+    return;
+  }
+  window.history.pushState(null, '', hash);
+  updatePageSectionState();
+  updatePageNavState();
+}
+
+function setupHashNavigation() {
+  document.querySelectorAll('[data-page-link]').forEach((link) => {
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      const targetHash = '#' + link.getAttribute('data-page-link');
+      setPageHash(targetHash);
+    });
+  });
+  window.addEventListener('hashchange', () => {
+    ensureDefaultPageHash();
+    updatePageSectionState();
+    updatePageNavState();
+  });
+}
+
 async function loadSystems() {
   try {
     const res = await fetch('/api/systems');
@@ -1079,6 +1133,117 @@ function renderWifiQr(ssid, password) {
   hint.textContent = 'Scan with a phone camera to join the hotspot.';
 }
 
+function renderWifiMode(mode) {
+  const modeEl = document.getElementById('wifiMode');
+  const btnClient = document.getElementById('btnWifiModeClient');
+  const btnHotspot = document.getElementById('btnWifiModeHotspot');
+  const btnFallback = document.getElementById('btnWifiApplyFallback');
+  if (!modeEl || !btnClient || !btnHotspot || !btnFallback) return;
+
+  const normalized = (mode || 'unknown').toLowerCase();
+  modeEl.classList.remove('mode-client', 'mode-hotspot', 'mode-unknown');
+  if (normalized === 'client') {
+    modeEl.textContent = 'Client';
+    modeEl.classList.add('mode-client');
+    btnClient.classList.add('is-hidden');
+    btnHotspot.classList.remove('is-hidden');
+    btnFallback.classList.remove('is-hidden');
+  } else if (normalized === 'hotspot') {
+    modeEl.textContent = 'Hotspot';
+    modeEl.classList.add('mode-hotspot');
+    btnHotspot.classList.add('is-hidden');
+    btnClient.classList.remove('is-hidden');
+    btnFallback.classList.add('is-hidden');
+  } else {
+    modeEl.textContent = mode || '—';
+    modeEl.classList.add('mode-unknown');
+    btnClient.classList.remove('is-hidden');
+    btnHotspot.classList.remove('is-hidden');
+    btnFallback.classList.remove('is-hidden');
+  }
+}
+
+function renderWifiStatusContext(data) {
+  const mode = (data?.mode || '').toLowerCase();
+  const stateLabel = document.getElementById('wifiStateLabel');
+  const stateValue = document.getElementById('wifiState');
+  const connectionLabel = document.getElementById('wifiConnectionLabel');
+  const connectionValue = document.getElementById('wifiConnection');
+  const fallbackRow = document.getElementById('wifiFallbackRow');
+  if (!stateLabel || !stateValue || !connectionLabel || !connectionValue) return;
+
+  if (mode === 'hotspot') {
+    stateLabel.textContent = 'Hotspot status:';
+    stateValue.textContent = 'Active';
+    connectionLabel.textContent = 'Hotspot network:';
+    connectionValue.textContent = data.hotspot?.ssid || '—';
+    if (fallbackRow) fallbackRow.classList.add('is-hidden');
+    return;
+  }
+
+  if (mode === 'client') {
+    stateLabel.textContent = 'Client link state:';
+    stateValue.textContent = data.wifiState || 'Not connected';
+    connectionLabel.textContent = 'Connected network:';
+    connectionValue.textContent = data.activeWifiConnection || data.wifiConnection || 'Not connected';
+    if (fallbackRow) fallbackRow.classList.remove('is-hidden');
+    return;
+  }
+
+  stateLabel.textContent = 'WiFi state:';
+  stateValue.textContent = data.wifiState || '—';
+  connectionLabel.textContent = 'Connected network:';
+  connectionValue.textContent = data.activeWifiConnection || data.wifiConnection || '—';
+  if (fallbackRow) fallbackRow.classList.remove('is-hidden');
+}
+
+function renderKnownNetworks(networks, activeWifiConnection, mode) {
+  const container = document.getElementById('wifiKnownNetworks');
+  const hint = document.getElementById('wifiKnownHint');
+  if (!container || !hint) return;
+
+  if (!Array.isArray(networks) || networks.length === 0) {
+    hint.textContent = 'No saved networks found yet.';
+    container.innerHTML = '<div class="wifi-network-meta">No known networks.</div>';
+    return;
+  }
+
+  const hotspotMode = (mode || '').toLowerCase() === 'hotspot';
+  hint.textContent = hotspotMode
+    ? 'Known networks are saved. Switch to client mode to join one.'
+    : 'Networks saved in NetworkManager.';
+
+  container.innerHTML = '';
+  networks.forEach((network) => {
+    const row = document.createElement('div');
+    row.className = 'wifi-network-item';
+
+    const left = document.createElement('div');
+    const ssid = network.ssid || '(unnamed)';
+    const isActive = ssid === activeWifiConnection;
+    const auto = network.autoconnect ? 'Auto-connect' : 'Manual connect';
+
+    const title = document.createElement('strong');
+    title.textContent = ssid;
+    const meta = document.createElement('div');
+    meta.className = 'wifi-network-meta';
+    meta.textContent = isActive ? `${auto} - connected` : auto;
+    left.appendChild(title);
+    left.appendChild(meta);
+
+    const button = document.createElement('button');
+    button.className = 'btn btn-primary btn-small';
+    button.type = 'button';
+    button.textContent = isActive ? 'Connected' : (hotspotMode ? 'Switch & Join' : 'Join');
+    button.disabled = isActive;
+    button.onclick = () => connectWifi(ssid, '');
+
+    row.appendChild(left);
+    row.appendChild(button);
+    container.appendChild(row);
+  });
+}
+
 function renderWifiNetworks(networks) {
   const container = document.getElementById('wifiScanResults');
   if (!container) return;
@@ -1115,12 +1280,12 @@ async function loadWifiStatus() {
     if (!res.ok) {
       throw new Error(data.error || res.statusText);
     }
-    document.getElementById('wifiMode').textContent = data.mode || '—';
-    document.getElementById('wifiState').textContent = data.wifiState || '—';
-    document.getElementById('wifiConnection').textContent = data.activeWifiConnection || data.wifiConnection || '—';
+    renderWifiMode(data.mode);
+    renderWifiStatusContext(data);
     document.getElementById('wifiHotspotSsid').textContent = data.hotspot?.ssid || '—';
     document.getElementById('wifiHotspotPassword').textContent = data.hotspot?.password || '—';
     renderWifiQr(data.hotspot?.ssid, data.hotspot?.password);
+    renderKnownNetworks(data.knownClientNetworks || [], data.activeWifiConnection || data.wifiConnection || '', data.mode || '');
   } catch (err) {
     console.error('loadWifiStatus:', err);
   }
@@ -1139,9 +1304,13 @@ async function scanWifi() {
   }
 }
 
-async function connectWifi() {
-  const ssid = (document.getElementById('wifiSsid')?.value || '').trim();
-  const password = document.getElementById('wifiPassword')?.value || '';
+async function connectWifi(ssidOverride, passwordOverride) {
+  const ssid = typeof ssidOverride === 'string'
+    ? ssidOverride.trim()
+    : (document.getElementById('wifiSsid')?.value || '').trim();
+  const password = typeof passwordOverride === 'string'
+    ? passwordOverride
+    : (document.getElementById('wifiPassword')?.value || '');
   if (!ssid) {
     showStatus('Enter an SSID to connect.', 'error');
     return;
@@ -1159,6 +1328,7 @@ async function connectWifi() {
     }
     showStatus('Connected to WiFi network: ' + (data.connectedSsid || ssid), 'success');
     loadWifiStatus();
+    scanWifi();
   } catch (err) {
     showStatus('WiFi connect failed: ' + err.message, 'error');
   }
@@ -1201,6 +1371,10 @@ document.getElementById('btnWifiScan')?.addEventListener('click', scanWifi);
 document.getElementById('btnWifiConnect')?.addEventListener('click', connectWifi);
 
 // Initialize on page load
+ensureDefaultPageHash();
+setupHashNavigation();
+updatePageSectionState();
+updatePageNavState();
 loadSystems();
 loadPorts();
 loadConnections();

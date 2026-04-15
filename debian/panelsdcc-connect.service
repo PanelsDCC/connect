@@ -32,7 +32,9 @@ ProtectHome=true
 ReadWritePaths=/var/lib/panelsdcc-connect
 
 # Allow access to USB, serial devices, and hardware interfaces (GPIO, I2C, SPI)
-SupplementaryGroups=dialout plugdev gpio i2c spi input
+# netdev: required for nmcli / NetworkManager (WiFi scan, connect, hotspot) as this user;
+# systemd uses only this list, not /etc/group, when SupplementaryGroups is set.
+SupplementaryGroups=dialout plugdev gpio i2c spi input netdev
 
 # Allow access to device files (USB, serial ports)
 PrivateDevices=false

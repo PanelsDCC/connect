@@ -16,7 +16,8 @@ fi
 # i2c: for I2C bus access (Raspberry Pi)
 # spi: for SPI bus access (Raspberry Pi)
 # input: for input devices (sometimes needed)
-for group in dialout plugdev gpio i2c spi input; do
+# netdev: for NetworkManager/nmcli when not relying solely on systemd SupplementaryGroups
+for group in dialout plugdev gpio i2c spi input netdev; do
     if getent group "$group" >/dev/null 2>&1; then
         if ! id -nG dcc-io | grep -qw "$group"; then
             echo "Adding dcc-io user to $group group for hardware access..."
@@ -79,7 +80,8 @@ else
 fi
 
 if systemctl is-active panelsdcc-connect >/dev/null 2>&1; then
-    echo "Service already running."
+    echo "Restarting panelsdcc-connect to apply group membership (e.g. netdev for WiFi)..."
+    systemctl restart panelsdcc-connect || echo "Failed to restart service. Check logs with: journalctl -u panelsdcc-connect"
 else
     echo "Starting panelsdcc-connect service..."
     systemctl start panelsdcc-connect || echo "Failed to start service. Check logs with: journalctl -u panelsdcc-connect"

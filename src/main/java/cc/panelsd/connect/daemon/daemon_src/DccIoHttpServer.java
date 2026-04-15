@@ -129,8 +129,8 @@ final class DccIoHttpServer {
         int code = p.waitFor();
         if (code != 0) {
             throw new IOException("wifi command failed (exit " + code + "): " + out
-                    + ". Ensure /etc/sudoers.d/panelsdcc-connect-updater allows dcc-io to run "
-                    + script + " commands without a password.");
+                    + ". Ensure /etc/sudoers.d/panelsdcc-connect-updater includes a NOPASSWD rule for "
+                    + script + " commands.");
         }
         if (out.isEmpty()) {
             return "{\"status\":\"ok\"}";
