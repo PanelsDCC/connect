@@ -77,7 +77,11 @@ public class JsonMessageHandler {
 
     private JsonObject handleType(String type, String method, JsonObject data, String requestId, String clientId) {
         String normalized = method == null ? "get" : method.toLowerCase(Locale.ROOT);
-        if (!normalized.equals("get") && !normalized.equals("put") && !normalized.equals("post") && !normalized.equals("list")) {
+        if (!normalized.equals("get")
+                && !normalized.equals("put")
+                && !normalized.equals("post")
+                && !normalized.equals("patch")
+                && !normalized.equals("list")) {
             return error(400, "Unsupported method '" + method + "'", requestId);
         }
 
