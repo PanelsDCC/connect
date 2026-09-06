@@ -2,6 +2,22 @@
 
 This document describes how to build and install the panelsdcc-connect Debian package.
 
+## Release to GitHub
+
+**One-step (set version, build JAR, commit, tag, push):**
+
+```bash
+VERSION=2.0.1 ./release-github.sh
+```
+
+That publishes to [PanelsDCC/connect](https://github.com/PanelsDCC/connect) (commit + tag + `git push`). Attach `panelsdcc-connect_2.0.1-1_all.deb` to the GitHub release manually after `./build-deb.sh`.
+
+If the version is already set and the JAR is already built:
+
+```bash
+./publish-github.sh
+```
+
 ## Prerequisites
 
 Before building the Debian package, ensure you have the following installed:

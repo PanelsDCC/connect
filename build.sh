@@ -4,6 +4,12 @@
 
 set -e
 
+# Prefer a JDK 21+ on PATH. WSL often has a Java 25 JRE with javac 11.
+if [ -z "${JAVA_HOME:-}" ] && [ -x "${HOME}/.local/jdk-21/bin/javac" ]; then
+    export JAVA_HOME="${HOME}/.local/jdk-21"
+    export PATH="${JAVA_HOME}/bin:${PATH}"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 JMRI_PREBUILT="${JMRI_HOME:-$(dirname "$0")/../JMRI}"
 JMRI_SOURCE="${JMRI_HOME:-$(dirname "$0")/../JMRI-5.12}"
