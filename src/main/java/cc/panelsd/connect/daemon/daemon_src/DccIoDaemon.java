@@ -9,9 +9,16 @@ import cc.panelsd.connect.daemon.JsonMessageHandler;
 import cc.panelsd.connect.daemon.JsonWebSocketHandler;
 import cc.panelsd.connect.daemon.JsonThrottleHandler;
 import cc.panelsd.connect.daemon.JsonAccessoriesHandler;
+import cc.panelsd.connect.daemon.JsonPanelSectionsHandler;
+import cc.panelsd.connect.daemon.JsonSensorStatesHandler;
+import cc.panelsd.connect.daemon.JsonCabTripsHandler;
+import cc.panelsd.connect.daemon.JsonCabDestinationsHandler;
 import cc.panelsd.connect.daemon.DccAccessoryService;
 import cc.panelsd.connect.daemon.JsonStatusHandler;
+import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import org.java_websocket.WebSocket;
+import org.java_websocket.handshake.ClientHandshake;
 import jmri.Throttle;
 import java.io.IOException;
 
@@ -53,6 +60,20 @@ public final class DccIoDaemon {
         messageHandler.registerTypeHandler("throttle", throttleHandler);
         JsonAccessoriesHandler accessoriesHandler = new JsonAccessoriesHandler(new DccAccessoryService(service));
         messageHandler.registerTypeHandler("accessories", accessoriesHandler);
+
+        // Control/Pi domain state that is stored + rebroadcast via the gateway WebSocket.
+        JsonPanelSectionsHandler panelSectionsHandler = new JsonPanelSectionsHandler();
+        messageHandler.registerTypeHandler("panelSections", panelSectionsHandler);
+
+        JsonSensorStatesHandler sensorStatesHandler = new JsonSensorStatesHandler();
+        messageHandler.registerTypeHandler("sensorStates", sensorStatesHandler);
+
+        JsonCabTripsHandler cabTripsHandler = new JsonCabTripsHandler();
+        messageHandler.registerTypeHandler("cabTrips", cabTripsHandler);
+
+        JsonCabDestinationsHandler cabDestinationsHandler = new JsonCabDestinationsHandler();
+        messageHandler.registerTypeHandler("cabDestinations", cabDestinationsHandler);
+
         JsonStatusHandler statusHandler = new JsonStatusHandler(new JsonStatusHandler.StatusProvider() {
             @Override
             public java.util.Collection<cc.panelsd.connect.core.CommandStationConnection> getConnections() {
@@ -71,11 +92,65 @@ public final class DccIoDaemon {
         });
         messageHandler.registerTypeHandler("status", statusHandler);
         int websocketPort = port + 1; // run WebSocket on adjacent port to avoid HttpServer conflict
-        JsonWebSocketHandler webSocketHandler = new JsonWebSocketHandler(websocketPort, "/json", messageHandler);
+        Gson gson = new Gson();
+        JsonWebSocketHandler webSocketHandler = new JsonWebSocketHandler(websocketPort, "/json", messageHandler) {
+            @Override
+            public void onOpen(WebSocket conn, ClientHandshake handshake) {
+                super.onOpen(conn, handshake);
+                try {
+                    // Mirror dev-gateway behaviour: proactively send full cached state
+                    // to a newly connected client (browser or Pi).
+                    if (panelSectionsHandler != null) {
+                        var assignments = panelSectionsHandler.snapshotAssignments();
+                        if (assignments != null && assignments.size() > 0) {
+                            JsonObject msg = new JsonObject();
+                            msg.addProperty("type", "panelSections");
+                            msg.addProperty("method", "full");
+                            JsonObject data = new JsonObject();
+                            data.add("assignments", assignments);
+                            msg.add("data", data);
+                            conn.send(gson.toJson(msg));
+                        }
+                    }
+
+                    if (cabTripsHandler != null) {
+                        var trips = cabTripsHandler.snapshotTrips();
+                        if (trips != null && trips.size() > 0) {
+                            JsonObject msg = new JsonObject();
+                            msg.addProperty("type", "cabTrips");
+                            msg.addProperty("method", "full");
+                            JsonObject data = new JsonObject();
+                            data.add("trips", trips);
+                            msg.add("data", data);
+                            conn.send(gson.toJson(msg));
+                        }
+                    }
+
+                    if (cabDestinationsHandler != null) {
+                        var plans = cabDestinationsHandler.snapshotPlans();
+                        if (plans != null && plans.size() > 0) {
+                            JsonObject msg = new JsonObject();
+                            msg.addProperty("type", "cabDestinations");
+                            msg.addProperty("method", "full");
+                            JsonObject data = new JsonObject();
+                            data.add("plans", plans);
+                            msg.add("data", data);
+                            conn.send(gson.toJson(msg));
+                        }
+                    }
+                } catch (Exception ignore) {
+                    // Best-effort cache dump only; don't block connection.
+                }
+            }
+        };
         JsonBroadcaster broadcaster = webSocketHandler.getBroadcaster();
         throttleHandler.setBroadcaster(broadcaster);
         accessoriesHandler.setBroadcaster(broadcaster);
         statusHandler.setBroadcaster(broadcaster);
+        panelSectionsHandler.setBroadcaster(broadcaster);
+        sensorStatesHandler.setBroadcaster(broadcaster);
+        cabTripsHandler.setBroadcaster(broadcaster);
+        cabDestinationsHandler.setBroadcaster(broadcaster);
         webSocketHandler.start();
         System.out.println("WebSocket JSON API listening on port " + websocketPort + " at /json");
         
