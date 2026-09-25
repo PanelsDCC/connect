@@ -49,10 +49,6 @@ public final class DccIoDaemon {
             }
         }
         DccIoServiceImpl service = new DccIoServiceImpl();
-        
-        // Start continuous device monitoring and auto-connect
-        System.out.println("Starting device monitoring...");
-        service.startDeviceMonitoring();
 
         JsonMessageHandler messageHandler = new JsonMessageHandler();
         JsonThrottleHandler throttleHandler = new JsonThrottleHandler(new DccThrottleService(service));
@@ -151,8 +147,14 @@ public final class DccIoDaemon {
         sensorStatesHandler.setBroadcaster(broadcaster);
         cabTripsHandler.setBroadcaster(broadcaster);
         cabDestinationsHandler.setBroadcaster(broadcaster);
+        service.setSensorHardwarePublisher(broadcaster::broadcast);
         webSocketHandler.start();
         System.out.println("WebSocket JSON API listening on port " + websocketPort + " at /json");
+
+        // Start USB monitoring after the gateway broadcaster is available so sensor
+        // boards can publish sensorHardware patches immediately.
+        System.out.println("Starting device monitoring...");
+        service.startDeviceMonitoring();
         
         // Subscribe to throttle events from the controller to broadcast via WebSocket
         DccThrottleService throttleService = new DccThrottleService(service);

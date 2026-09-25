@@ -2,7 +2,8 @@ usr/lib/panelsdcc-connect/*.jar usr/lib/panelsdcc-connect/
 usr/local/bin/jmri-install usr/local/bin/
 usr/local/bin/panelsdcc-connect-updater usr/local/bin/
 usr/local/bin/panelsdcc-connect-wifi usr/local/bin/
+usr/local/bin/panelsdcc-connect-arduino-install usr/local/bin/
+usr/share/panelsdcc-connect/firmware/panelsdcc-sensor-board usr/share/panelsdcc-connect/firmware/
 etc/sudoers.d/panelsdcc-connect-updater etc/sudoers.d/
 lib/systemd/system/panelsdcc-connect.service lib/systemd/system/
 lib/systemd/system/panelsdcc-connect-wifi-fallback.service lib/systemd/system/
-

@@ -19,9 +19,14 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.StringJoiner;
 
@@ -37,6 +42,7 @@ import java.util.StringJoiner;
  *   <li>GET /api/update - update status JSON (from update-status.json)</li>
  *   <li>POST /api/update/check - refresh status from GitHub</li>
  *   <li>POST /api/update/install - queue install (requires sudo; see sudoers); returns 202</li>
+ *   <li>POST /api/update/upload - accept a local .deb body, save, queue install-local; returns 202</li>
  *   <li>GET /api/wifi - wifi mode/status/hotspot credentials</li>
  *   <li>GET /api/wifi/scan - nearby SSIDs from NetworkManager</li>
  *   <li>POST /api/wifi/connect - join client network</li>
@@ -63,6 +69,7 @@ final class DccIoHttpServer {
         server.createContext("/api/systems", new SystemsHandler());
         server.createContext("/api/discover", new DiscoverHandler());
         server.createContext("/api/events", new EventsHandler()); // SSE endpoint for live events
+        server.createContext("/api/sensors", new SensorsApiHandler());
         // Software update API (single prefix; subpaths routed in handler — HttpServer matches /api/update*)
         server.createContext("/api/update", new UpdateApiHandler());
         server.createContext("/api/wifi", new WifiApiHandler());
@@ -90,21 +97,97 @@ final class DccIoHttpServer {
      * When the daemon runs as {@code dcc-io}, uses {@code sudo -n} (see sudoers).
      */
     private static void runPanelsdccUpdaterInstall() throws IOException, InterruptedException {
+        runPanelsdccUpdaterMode("install");
+    }
+
+    /**
+     * Queues {@code install-local --background} for a previously uploaded
+     * {@link ConnectUpdater#LOCAL_DEB}.
+     */
+    private static void runPanelsdccUpdaterInstallLocal() throws IOException, InterruptedException {
+        runPanelsdccUpdaterMode("install-local");
+    }
+
+    private static void runPanelsdccUpdaterMode(String mode) throws IOException, InterruptedException {
         String script = "/usr/local/bin/panelsdcc-connect-updater";
         ProcessBuilder pb;
         if ("root".equals(System.getProperty("user.name"))) {
-            pb = new ProcessBuilder(script, "install", "--background");
+            pb = new ProcessBuilder(script, mode, "--background");
         } else {
-            pb = new ProcessBuilder("sudo", "-n", script, "install", "--background");
+            pb = new ProcessBuilder("sudo", "-n", script, mode, "--background");
         }
         pb.redirectErrorStream(true);
         Process p = pb.start();
         String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         int code = p.waitFor();
         if (code != 0) {
-            throw new IOException("install failed (exit " + code + "): " + out.trim()
+            throw new IOException(mode + " failed (exit " + code + "): " + out.trim()
                     + ". Ensure /etc/sudoers.d/panelsdcc-connect-updater allows dcc-io to run "
-                    + script + " install --background without a password.");
+                    + script + " " + mode + " --background without a password.");
+        }
+    }
+
+    private static final long MAX_DEB_UPLOAD_BYTES = 100L * 1024 * 1024;
+    private static final byte[] DEB_MAGIC = new byte[]{'!', '<', 'a', 'r', 'c', 'h', '>', '\n'};
+
+    /**
+     * Stream a raw {@code .deb} body to {@link ConnectUpdater#LOCAL_DEB}, validating size and
+     * Debian archive magic.
+     */
+    private static void saveUploadedDeb(InputStream body, String filenameHint) throws IOException {
+        if (filenameHint != null && !filenameHint.isBlank()) {
+            String name = filenameHint.trim().toLowerCase(Locale.ROOT);
+            if (!name.endsWith(".deb")) {
+                throw new IOException("Filename must end with .deb");
+            }
+        }
+        Path dest = Path.of(ConnectUpdater.LOCAL_DEB);
+        Files.createDirectories(dest.getParent());
+        Path part = dest.resolveSibling(dest.getFileName().toString() + ".part");
+        long written = 0;
+        try (OutputStream out = Files.newOutputStream(part,
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = body.read(buf)) >= 0) {
+                if (n == 0) {
+                    continue;
+                }
+                if (written + n > MAX_DEB_UPLOAD_BYTES) {
+                    throw new IOException("Upload exceeds maximum size of 100MB");
+                }
+                out.write(buf, 0, n);
+                written += n;
+            }
+        } catch (IOException e) {
+            try {
+                Files.deleteIfExists(part);
+            } catch (IOException ignored) {
+                // ignore
+            }
+            throw e;
+        }
+        if (written == 0) {
+            Files.deleteIfExists(part);
+            throw new IOException("Empty upload body");
+        }
+        if (written < DEB_MAGIC.length) {
+            Files.deleteIfExists(part);
+            throw new IOException("Not a Debian package (missing !<arch> magic)");
+        }
+        try (InputStream in = Files.newInputStream(part)) {
+            byte[] head = in.readNBytes(DEB_MAGIC.length);
+            for (int i = 0; i < DEB_MAGIC.length; i++) {
+                if (head.length <= i || head[i] != DEB_MAGIC[i]) {
+                    Files.deleteIfExists(part);
+                    throw new IOException("Not a Debian package (missing !<arch> magic)");
+                }
+            }
+        }
+        try {
+            Files.move(part, dest, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException ex) {
+            Files.move(part, dest, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -374,7 +457,9 @@ final class DccIoHttpServer {
                 return;
             }
             
-            java.util.List<cc.panelsd.connect.core.DeviceDiscoveryService.DetectedDevice> detected = discoveryService.discoverDevices();
+            // Use enriched discovery so CH340 candidates report post-probe / cached type
+            java.util.List<cc.panelsd.connect.core.DeviceDiscoveryService.DetectedDevice> detected =
+                    service.discoverDevicesEnriched();
             
             // Format as JSON
             StringJoiner joiner = new StringJoiner(",", "{\"devices\":[", "]}");
@@ -386,6 +471,10 @@ final class DccIoHttpServer {
                 deviceJson.add("\"vendorId\":\"" + escape(device.vendorId) + "\"");
                 deviceJson.add("\"productId\":\"" + escape(device.productId) + "\"");
                 deviceJson.add("\"name\":\"" + escape(device.name) + "\"");
+                deviceJson.add("\"needsProbe\":" + device.needsProbe);
+                if (device.byPath != null) {
+                    deviceJson.add("\"byPath\":\"" + escape(device.byPath) + "\"");
+                }
                 if (!device.config.isEmpty()) {
                     StringJoiner configJson = new StringJoiner(",");
                     for (java.util.Map.Entry<String, String> entry : device.config.entrySet()) {
@@ -646,6 +735,36 @@ final class DccIoHttpServer {
                 }
                 return;
             }
+            if (path.endsWith("/upload")) {
+                if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                Map<String, String> q = queryParams(exchange.getRequestURI());
+                String filenameHint = q.get("filename");
+                try (InputStream is = exchange.getRequestBody()) {
+                    saveUploadedDeb(is, filenameHint);
+                } catch (IOException e) {
+                    String msg = e.getMessage() != null ? e.getMessage() : "Upload failed";
+                    int status = msg.startsWith("Upload exceeds") || msg.startsWith("Empty")
+                            || msg.startsWith("Filename") || msg.startsWith("Not a Debian")
+                            ? 400 : 500;
+                    sendJsonError(exchange, status, msg);
+                    return;
+                }
+                try {
+                    runPanelsdccUpdaterInstallLocal();
+                    JsonObject body = new JsonObject();
+                    body.addProperty("accepted", true);
+                    body.addProperty("message",
+                            "Local package uploaded. Install started. Poll GET /api/update for progress; the service may restart.");
+                    sendJsonRaw(exchange, 202, new Gson().toJson(body));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    sendJson(exchange, 500, "{\"error\":\"Interrupted\"}");
+                }
+                return;
+            }
             if (path.endsWith("/check")) {
                 if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
                     sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
@@ -672,6 +791,147 @@ final class DccIoHttpServer {
                 return;
             }
             sendJsonRaw(exchange, 200, ConnectUpdater.getStatusJsonString());
+        }
+    }
+
+    private final class SensorsApiHandler extends JsonHandler {
+        @Override
+        protected void handleJson(HttpExchange exchange) throws IOException {
+            String path = exchange.getRequestURI().getPath();
+            String method = exchange.getRequestMethod();
+            Gson gson = new Gson();
+
+            if ("/api/sensors".equals(path) || "/api/sensors/".equals(path)) {
+                if (!"GET".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                sendJsonRaw(exchange, 200, gson.toJson(service.listSensorsJson()));
+                return;
+            }
+
+            if ("/api/sensors/events".equals(path) || "/api/sensors/events/".equals(path)) {
+                if (!"GET".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                JsonObject root = new JsonObject();
+                root.add("events", service.sensorEventsJson());
+                sendJsonRaw(exchange, 200, gson.toJson(root));
+                return;
+            }
+
+            if ("/api/sensors/toolchain".equals(path) || "/api/sensors/toolchain/".equals(path)) {
+                if (!"GET".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                sendJsonRaw(exchange, 200, gson.toJson(service.getSensorFlasher().toolchainJson()));
+                return;
+            }
+
+            if ("/api/sensors/flash/status".equals(path) || "/api/sensors/flash/status/".equals(path)) {
+                if (!"GET".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                sendJsonRaw(exchange, 200, gson.toJson(service.getSensorFlasher().statusJson()));
+                return;
+            }
+
+            if ("/api/sensors/flash".equals(path) || "/api/sensors/flash/".equals(path)) {
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                JsonObject req = body.isEmpty() ? new JsonObject() : gson.fromJson(body, JsonObject.class);
+                if (req == null || !req.has("port") || !req.has("prefix")) {
+                    sendJson(exchange, 400, "{\"error\":\"port and prefix required\"}");
+                    return;
+                }
+                String port = req.get("port").getAsString();
+                String prefix = req.get("prefix").getAsString();
+                boolean started = service.flashSensorBoard(port, prefix);
+                if (!started) {
+                    JsonObject err = new JsonObject();
+                    err.addProperty("error", "Flash could not start (busy or invalid prefix)");
+                    err.add("status", service.getSensorFlasher().statusJson());
+                    sendJsonRaw(exchange, 409, gson.toJson(err));
+                    return;
+                }
+                JsonObject ok = new JsonObject();
+                ok.addProperty("ok", true);
+                ok.add("status", service.getSensorFlasher().statusJson());
+                sendJsonRaw(exchange, 202, gson.toJson(ok));
+                return;
+            }
+
+            if ("/api/sensors/probe".equals(path) || "/api/sensors/probe/".equals(path)) {
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                JsonObject req = body.isEmpty() ? new JsonObject() : gson.fromJson(body, JsonObject.class);
+                if (req == null || !req.has("port")) {
+                    sendJson(exchange, 400, "{\"error\":\"port required\"}");
+                    return;
+                }
+                try {
+                    JsonObject result = service.probeUsbSerial(req.get("port").getAsString());
+                    int code = result.has("ok") && result.get("ok").getAsBoolean() ? 200 : 422;
+                    sendJsonRaw(exchange, code, gson.toJson(result));
+                } catch (IllegalArgumentException e) {
+                    sendJsonError(exchange, 400, e.getMessage());
+                } catch (Exception e) {
+                    sendJsonError(exchange, 500, e.getMessage() != null ? e.getMessage() : "probe failed");
+                }
+                return;
+            }
+
+            // /api/sensors/{id}/release or /resume
+            if (path.startsWith("/api/sensors/")) {
+                String rest = path.substring("/api/sensors/".length());
+                if (rest.endsWith("/")) {
+                    rest = rest.substring(0, rest.length() - 1);
+                }
+                int slash = rest.lastIndexOf('/');
+                if (slash > 0) {
+                    String id = rest.substring(0, slash);
+                    String action = rest.substring(slash + 1);
+                    if ("release".equals(action)) {
+                        if (!"POST".equalsIgnoreCase(method)) {
+                            sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                            return;
+                        }
+                        try {
+                            service.releaseSensorBoard(id);
+                            sendJson(exchange, 200, "{\"ok\":true}");
+                        } catch (IllegalArgumentException e) {
+                            sendJsonError(exchange, 404, e.getMessage());
+                        }
+                        return;
+                    }
+                    if ("resume".equals(action)) {
+                        if (!"POST".equalsIgnoreCase(method)) {
+                            sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                            return;
+                        }
+                        try {
+                            service.resumeSensorBoard(id);
+                            sendJson(exchange, 200, "{\"ok\":true}");
+                        } catch (IllegalArgumentException e) {
+                            sendJsonError(exchange, 404, e.getMessage());
+                        } catch (IOException e) {
+                            sendJsonError(exchange, 500, e.getMessage());
+                        }
+                        return;
+                    }
+                }
+            }
+
+            sendJson(exchange, 404, "{\"error\":\"Not found\"}");
         }
     }
 

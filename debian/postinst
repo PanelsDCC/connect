@@ -43,6 +43,20 @@ if [ -x /usr/local/bin/panelsdcc-connect-wifi ]; then
     }
 fi
 
+# Install arduino-cli + arduino:avr core for sensor board flashing (headless; needs network).
+if [ -x /usr/local/bin/panelsdcc-connect-arduino-install ]; then
+    echo "Installing Arduino toolchain for PanelsDCC Sensor Boards..."
+    /usr/local/bin/panelsdcc-connect-arduino-install || {
+        echo ""
+        echo "WARNING: Arduino toolchain install failed (network required)."
+        echo "Sensor board flashing will be unavailable until you run:"
+        echo "  sudo panelsdcc-connect-arduino-install"
+        echo ""
+    }
+else
+    echo "WARNING: panelsdcc-connect-arduino-install not found."
+fi
+
 # Reload systemd to pick up new service file
 systemctl daemon-reload
 

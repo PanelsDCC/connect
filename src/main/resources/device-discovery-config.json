@@ -85,15 +85,28 @@
       "descriptionPatterns": ["dcc++", "dccpp", "arduino"]
     },
     {
-      "name": "DCC++ (CH340)",
+      "name": "USB Serial (CH340)",
       "vendorId": "0x1a86",
       "productId": "0x7523",
-      "systemType": "dccpp",
+      "systemType": "usb-serial-candidate",
+      "needsProbe": true,
       "defaultPort": null,
       "config": {
         "baudRate": "115200"
       },
       "descriptionPatterns": ["dcc++", "dccpp"]
+    },
+    {
+      "name": "PanelsDCC Sensor Board",
+      "vendorId": "0x1a86",
+      "productId": "0x7523",
+      "systemType": "panelsdcc-sensor-board",
+      "needsProbe": false,
+      "defaultPort": null,
+      "config": {
+        "baudRate": "9600"
+      },
+      "descriptionPatterns": ["panelsdcc sensor board"]
     },
     {
       "name": "DCC-EX CSB1 / ESP32-S3 (USB CDC)",

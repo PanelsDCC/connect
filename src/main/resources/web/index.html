@@ -11,9 +11,47 @@
 
     <nav class="page-nav" aria-label="Configuration sections">
         <a href="#dcc" class="page-link" data-page-link="dcc">DCC Configuration</a>
+        <a href="#sensors" class="page-link" data-page-link="sensors">Sensors</a>
         <a href="#wifi" class="page-link" data-page-link="wifi">WiFi</a>
         <a href="#updates" class="page-link" data-page-link="updates">Updates</a>
     </nav>
+
+    <section id="page-sensors" class="page-section" data-page="sensors">
+        <div class="sensors-section">
+            <h2>Sensor boards</h2>
+            <p class="wifi-hint">USB PanelsDCC Sensor Boards are auto-detected. Flash sets the board prefix (A, B, AA, …).</p>
+
+            <div class="sensors-toolchain" id="sensorsToolchain">
+                <p class="update-line"><span class="label">Toolchain:</span> <span id="sensorsToolchainStatus">Checking…</span></p>
+            </div>
+
+            <h3>Active boards</h3>
+            <p class="wifi-hint">Each board shows optical (A0–A6) and digital (D2–D12) inputs. Lit = DETECTED.</p>
+            <div id="sensorsBoardList" class="sensors-board-list"></div>
+
+            <h3>USB candidates</h3>
+            <p class="wifi-hint">CH340 ports waiting for a serial probe. Auto-probe runs in the background; use <strong>Probe</strong> if a board did not appear after reboot.</p>
+            <div id="sensorsCandidateList" class="sensors-board-list"></div>
+
+            <h3>Flash USB board</h3>
+            <div class="sensors-flash-form">
+                <div class="form-group">
+                    <label>Port:</label>
+                    <select id="sensorFlashPort"></select>
+                </div>
+                <div class="form-group">
+                    <label>Board prefix (A–Z or AA–ZZ):</label>
+                    <input type="text" id="sensorFlashPrefix" maxlength="2" placeholder="A" style="text-transform:uppercase;">
+                    <p class="wifi-hint" id="sensorFlashChannels">Channels: —</p>
+                </div>
+                <button type="button" id="btnSensorFlash" class="btn btn-primary">Flash board</button>
+                <pre id="sensorFlashLog" class="sensors-flash-log"></pre>
+            </div>
+
+            <h3>Other transports</h3>
+            <div id="sensorsTransportStubs" class="sensors-transport-stubs"></div>
+        </div>
+    </section>
 
     <section id="page-updates" class="page-section" data-page="updates">
         <div class="update-section">
@@ -24,6 +62,8 @@
             <div class="update-actions">
                 <button type="button" id="btnCheckUpdate" class="btn btn-primary">Check for updates</button>
                 <button type="button" id="btnInstallUpdate" class="btn btn-secondary" disabled>Install update</button>
+                <input type="file" id="updateDebFile" class="file-input-hidden" accept=".deb,application/vnd.debian.binary-package" tabindex="-1" aria-hidden="true" />
+                <button type="button" id="btnInstallLocalDeb" class="btn btn-secondary">Upload update</button>
             </div>
         </div>
     </section>

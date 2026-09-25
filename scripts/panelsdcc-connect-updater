@@ -1,14 +1,15 @@
 #!/bin/bash
 # panelsDCC-connect updater CLI — runs the Java updater with the installed fat JAR.
-# Usage: panelsdcc-connect-updater check|install|install --background|test
+# Usage: panelsdcc-connect-updater check|install|install --background|install-local|install-local --background|test
 #
-# install: The main panelsdcc-connect.service runs under systemd hardening (ProtectSystem=strict,
-# ReadWritePaths=..., etc.). That makes /var/lib/dpkg and /usr effectively read-only in the
-# service mount namespace, so dpkg/apt cannot run even as root via sudo from the same process
-# tree. We run the actual install in a transient systemd unit (systemd-run) with normal
-# filesystem access. PANELSDCC_UPDATER_DIRECT skips re-entry into systemd-run.
+# install / install-local: The main panelsdcc-connect.service runs under systemd hardening
+# (ProtectSystem=strict, ReadWritePaths=..., etc.). That makes /var/lib/dpkg and /usr
+# effectively read-only in the service mount namespace, so dpkg/apt cannot run even as root
+# via sudo from the same process tree. We run the actual install in a transient systemd unit
+# (systemd-run) with normal filesystem access. PANELSDCC_UPDATER_DIRECT skips re-entry into
+# systemd-run.
 #
-# install --background: queue the same transient unit but do not wait (--no-block). Used by the
+# --background: queue the same transient unit but do not wait (--no-block). Used by the
 # web UI so the daemon is not waiting on "sudo systemd-run --wait" when dpkg's postinst
 # restarts panelsdcc-connect — that stop would SIGTERM the waiter (exit 143) even though the
 # install unit completes successfully.
@@ -19,16 +20,18 @@ if [ -z "$JAR" ] || [ ! -f "$JAR" ]; then
   exit 1
 fi
 
-if [ "${1:-}" = "install" ] && [ -z "${PANELSDCC_UPDATER_DIRECT:-}" ]; then
-  UNIT="panelsdcc-connect-install-$(date +%s)-$$.service"
-  if [ "${2:-}" = "--background" ]; then
+run_via_systemd() {
+  local mode="$1"
+  local background="${2:-}"
+  local UNIT="panelsdcc-connect-install-$(date +%s)-$$.service"
+  if [ "$background" = "--background" ]; then
     /usr/bin/systemd-run --no-block \
       --unit="$UNIT" \
       --property=ProtectSystem=no \
       --property=PrivateTmp=no \
       --property=NoNewPrivileges=no \
       --setenv=PANELSDCC_UPDATER_DIRECT=1 \
-      /usr/bin/java -cp "$JAR" cc.panelsd.connect.updater.ConnectUpdater install
+      /usr/bin/java -cp "$JAR" cc.panelsd.connect.updater.ConnectUpdater "$mode"
     exit 0
   fi
   exec /usr/bin/systemd-run --wait --collect \
@@ -37,13 +40,22 @@ if [ "${1:-}" = "install" ] && [ -z "${PANELSDCC_UPDATER_DIRECT:-}" ]; then
     --property=PrivateTmp=no \
     --property=NoNewPrivileges=no \
     --setenv=PANELSDCC_UPDATER_DIRECT=1 \
-    /usr/bin/java -cp "$JAR" cc.panelsd.connect.updater.ConnectUpdater install
+    /usr/bin/java -cp "$JAR" cc.panelsd.connect.updater.ConnectUpdater "$mode"
+}
+
+if [ -z "${PANELSDCC_UPDATER_DIRECT:-}" ]; then
+  case "${1:-}" in
+    install|install-local)
+      run_via_systemd "$1" "${2:-}"
+      ;;
+  esac
 fi
 
-# Strip --background so Java only sees "install" (direct / nested invocation).
-if [ "${1:-}" = "install" ] && [ "${2:-}" = "--background" ]; then
+# Strip --background so Java only sees the mode (direct / nested invocation).
+if { [ "${1:-}" = "install" ] || [ "${1:-}" = "install-local" ]; } && [ "${2:-}" = "--background" ]; then
+  mode="$1"
   shift 2
-  exec /usr/bin/java -cp "$JAR" cc.panelsd.connect.updater.ConnectUpdater install "$@"
+  exec /usr/bin/java -cp "$JAR" cc.panelsd.connect.updater.ConnectUpdater "$mode" "$@"
 fi
 
 exec /usr/bin/java -cp "$JAR" cc.panelsd.connect.updater.ConnectUpdater "$@"

@@ -468,6 +468,10 @@ h2 {
     gap: 10px;
 }
 
+input[type="file"].file-input-hidden {
+    display: none !important;
+}
+
 .update-section .btn-secondary {
     background: #6c757d;
     color: white;
@@ -588,3 +592,134 @@ h2 {
     font-size: 12px;
 }
 
+
+/* Sensors page */
+.sensors-section {
+    background: white;
+    padding: 20px;
+    border-radius: 5px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.sensors-board-list {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+.sensors-board-row {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px 16px;
+    background: #f8f9fa;
+    border: 1px solid #e2e2e2;
+    border-radius: 4px;
+}
+
+.sensors-board-header {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+}
+
+.sensors-board-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.sensors-led-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.sensors-led-group-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #666;
+    margin-bottom: 4px;
+}
+
+.sensors-led-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+}
+
+.sensors-led {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    min-width: 36px;
+}
+
+.sensors-led-lamp {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 2px solid #888;
+    background: #2a2a2a;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.4);
+}
+
+.sensors-led.on .sensors-led-lamp {
+    background: #e8a000;
+    border-color: #c48000;
+    box-shadow: 0 0 8px rgba(232, 160, 0, 0.75), inset 0 1px 1px rgba(255,255,255,0.35);
+}
+
+.sensors-led.kind-digital.on .sensors-led-lamp {
+    background: #2bbf5a;
+    border-color: #1a8f3f;
+    box-shadow: 0 0 8px rgba(43, 191, 90, 0.7), inset 0 1px 1px rgba(255,255,255,0.35);
+}
+
+.sensors-led-label {
+    font-size: 10px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: #444;
+}
+
+.sensors-led-id {
+    font-size: 9px;
+    color: #888;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.sensors-flash-form {
+    margin-bottom: 24px;
+}
+
+.sensors-flash-log {
+    margin-top: 12px;
+    max-height: 240px;
+    overflow: auto;
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    white-space: pre-wrap;
+}
+
+.sensors-transport-stubs {
+    display: grid;
+    gap: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+
+.sensors-stub-card {
+    padding: 14px;
+    background: #f0f0f0;
+    border: 1px dashed #bbb;
+    border-radius: 4px;
+    color: #555;
+    opacity: 0.9;
+}

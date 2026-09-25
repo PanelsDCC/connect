@@ -149,19 +149,29 @@ public class JsonPanelSectionsHandler implements JsonMessageHandler.TypeHandler 
 
     private JsonObject postOrPatch(String method, JsonObject data) {
         JsonObject row = normalizeRow(data);
-        String k = key(
-                row.get("panelId").getAsString(),
-                row.get("elementId").getAsString(),
-                row.get("logicalSectionId").getAsString()
-        );
+        String panelId = row.get("panelId").getAsString();
+        String elementId = row.get("elementId").getAsString();
+        String logicalSectionId = row.get("logicalSectionId").getAsString();
+        String k = key(panelId, elementId, logicalSectionId);
 
         boolean occupied = row.get("occupied").getAsBoolean();
         boolean hasDcc = row.has("dcc") && !(row.get("dcc") instanceof JsonNull);
         boolean clearing = !occupied && !hasDcc;
 
-        if (clearing) {
-            assignments.remove(k);
-        } else {
+        // Drop every row for this panel+element first. Place/clear callers often omit or
+        // disagree on logicalSectionId (UI "" vs panel UUID), which used to leave stale
+        // occupy rows that clearOverlap could not delete.
+        for (String existingKey : assignments.keySet().toArray(new String[0])) {
+            JsonObject existing = assignments.get(existingKey);
+            if (existing == null) continue;
+            String ep = existing.has("panelId") ? existing.get("panelId").getAsString() : "";
+            String ee = existing.has("elementId") ? existing.get("elementId").getAsString() : "";
+            if (panelId.equals(ep) && elementId.equals(ee)) {
+                assignments.remove(existingKey);
+            }
+        }
+
+        if (!clearing) {
             assignments.put(k, row);
         }
 

@@ -42,6 +42,7 @@ import java.util.regex.Pattern;
  * <pre>
  *   java -cp ... cc.panelsd.connect.updater.ConnectUpdater check
  *   java -cp ... cc.panelsd.connect.updater.ConnectUpdater install
+ *   java -cp ... cc.panelsd.connect.updater.ConnectUpdater install-local
  *   java -cp ... cc.panelsd.connect.updater.ConnectUpdater test
  * </pre>
  */
@@ -50,6 +51,8 @@ public final class ConnectUpdater {
     private static final String STATE_DIR = "/var/lib/panelsdcc-connect";
     private static final String STATE_FILE = STATE_DIR + "/update-status.json";
     private static final String TMP_DIR = "/var/tmp/panelsdcc-connect";
+    /** Fixed path for web/CLI local .deb installs (under ReadWritePaths, not PrivateTmp). */
+    public static final String LOCAL_DEB = STATE_DIR + "/uploads/pending.deb";
 
     private static final String REPO_OWNER = "PanelsDCC";
     private static final String REPO_NAME = "connect";
@@ -73,6 +76,9 @@ public final class ConnectUpdater {
             switch (mode) {
                 case "install":
                     runInstall();
+                    break;
+                case "install-local":
+                    runInstallLocal();
                     break;
                 case "test":
                     runTest();
@@ -450,6 +456,51 @@ public final class ConnectUpdater {
         }
     }
 
+    /** Capture stdout from a command; returns null on failure. */
+    private static String runCommandCapture(String... cmd) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(cmd);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            String out;
+            try (InputStream is = p.getInputStream()) {
+                out = new String(is.readAllBytes(), StandardCharsets.UTF_8).trim();
+            }
+            if (p.waitFor() != 0) {
+                return null;
+            }
+            return out.isEmpty() ? null : out;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String readDebVersion(Path debPath) {
+        String ver = runCommandCapture("dpkg-deb", "-f", debPath.toAbsolutePath().toString(), "Version");
+        if (ver == null || ver.isBlank()) {
+            return null;
+        }
+        return normalizeDebianVersionToSemver(ver);
+    }
+
+    private static void installDebPackage(Path debPath) throws IOException, InterruptedException {
+        try {
+            runCommand("dpkg", "-i", debPath.toAbsolutePath().toString());
+        } catch (Exception e) {
+            try {
+                runCommand("apt-get", "install", "-f", "-y");
+                runCommand("dpkg", "-i", debPath.toAbsolutePath().toString());
+            } catch (Exception e2) {
+                String msg = e2.getMessage() != null ? e2.getMessage() : String.valueOf(e2);
+                writeState(mapOf(
+                        "state", "error",
+                        "lastError", msg,
+                        "message", "Failed to install update via dpkg/apt."));
+                throw e2;
+            }
+        }
+    }
+
     private static void sleep(long ms) {
         try {
             Thread.sleep(ms);
@@ -574,27 +625,52 @@ public final class ConnectUpdater {
                 "state", "installing",
                 "message", "Installing " + info.assetName + "..."));
 
-        try {
-            runCommand("dpkg", "-i", debPath.toAbsolutePath().toString());
-        } catch (Exception e) {
-            try {
-                runCommand("apt-get", "install", "-f", "-y");
-                runCommand("dpkg", "-i", debPath.toAbsolutePath().toString());
-            } catch (Exception e2) {
-                String msg = e2.getMessage() != null ? e2.getMessage() : String.valueOf(e2);
-                writeState(mapOf(
-                        "state", "error",
-                        "lastError", msg,
-                        "message", "Failed to install update via dpkg/apt."));
-                throw e2;
-            }
-        }
+        installDebPackage(debPath);
 
         writeState(mapOf(
                 "state", "success",
                 "message", "Updated to " + info.latestVersion + ".",
                 "currentVersion", info.latestVersion,
                 "latestVersion", info.latestVersion,
+                "targetVersion", null,
+                "hasUpdate", false));
+    }
+
+    /**
+     * Install a previously uploaded {@code .deb} from {@value #LOCAL_DEB} (no GitHub).
+     */
+    private static void runInstallLocal() throws IOException, InterruptedException {
+        Path debPath = Path.of(LOCAL_DEB);
+        String currentVersion = getCurrentVersion();
+        if (!Files.isRegularFile(debPath)) {
+            writeState(mapOf(
+                    "state", "error",
+                    "currentVersion", currentVersion,
+                    "lastError", "Local package not found: " + LOCAL_DEB,
+                    "message", "No uploaded .deb to install."));
+            throw new IOException("Local package not found: " + LOCAL_DEB);
+        }
+
+        String debVersion = readDebVersion(debPath);
+        String targetLabel = debVersion != null ? debVersion : "uploaded package";
+
+        writeState(mapOf(
+                "state", "installing",
+                "currentVersion", currentVersion,
+                "latestVersion", debVersion,
+                "targetVersion", debVersion,
+                "hasUpdate", true,
+                "lastError", null,
+                "message", "Installing local package (" + targetLabel + ")..."));
+
+        installDebPackage(debPath);
+
+        String installed = debVersion != null ? debVersion : getCurrentVersion();
+        writeState(mapOf(
+                "state", "success",
+                "message", "Installed local package" + (debVersion != null ? " " + debVersion : "") + ".",
+                "currentVersion", installed,
+                "latestVersion", installed,
                 "targetVersion", null,
                 "hasUpdate", false));
     }

@@ -1,7 +1,7 @@
 let systems = [];
 let ports = [];
 
-const PAGE_HASHES = ['#dcc', '#wifi', '#updates'];
+const PAGE_HASHES = ['#dcc', '#sensors', '#wifi', '#updates'];
 
 function ensureDefaultPageHash() {
   if (!PAGE_HASHES.includes(window.location.hash)) {
@@ -692,14 +692,26 @@ async function discoverDevices() {
     const data = await res.json();
     if (res.ok) {
       if (data.devices && data.devices.length > 0) {
-        statusDiv.textContent = 'Found ' + data.devices.length + ' controller(s)';
-        devicesDiv.innerHTML = '<div style="margin-top: 10px;"><strong>Detected Controllers:</strong></div>';
+        statusDiv.textContent = 'Found ' + data.devices.length + ' device(s)';
+        devicesDiv.innerHTML = '<div style="margin-top: 10px;"><strong>Detected devices:</strong></div>';
         data.devices.forEach(device => {
           const deviceDiv = document.createElement('div');
           deviceDiv.style.cssText = 'margin: 5px 0; padding: 8px; background: white; border-radius: 3px; border: 1px solid #ddd;';
-          deviceDiv.innerHTML = '<strong>' + device.description + '</strong> (' + device.systemType + ')<br>' +
-            '<small style="color: #666;">Port: ' + device.port + ' | VID:PID ' + device.vendorId + ':' + device.productId + '</small><br>' +
-            '<button onclick="useDiscoveredDevice(\'' + device.port + '\', \'' + device.systemType + '\')" style="margin-top: 5px; padding: 5px 10px; background: #0e639c; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 12px;">Use This Device</button>';
+          const name = device.name || device.description;
+          let actionHtml;
+          if (device.systemType === 'panelsdcc-sensor-board') {
+            actionHtml = '<a href="#sensors" class="btn btn-primary btn-small" style="display:inline-block;margin-top:5px;text-decoration:none;" onclick="setPageHash(\'#sensors\'); return false;">Open in Sensors</a>';
+          } else if (device.systemType === 'usb-serial-candidate' || device.needsProbe) {
+            const portEsc = String(device.port || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+            actionHtml = '<button type="button" class="btn btn-primary btn-small" style="margin-top:5px;" onclick="probeSensorPort(\'' + portEsc + '\', this)">Probe now</button>' +
+              ' <a href="#sensors" class="btn btn-secondary btn-small" style="display:inline-block;margin-top:5px;text-decoration:none;" onclick="setPageHash(\'#sensors\'); return false;">Sensors</a>';
+          } else {
+            actionHtml = '<button onclick="useDiscoveredDevice(\'' + device.port + '\', \'' + device.systemType + '\')" style="margin-top: 5px; padding: 5px 10px; background: #0e639c; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 12px;">Use This Device</button>';
+          }
+          deviceDiv.innerHTML = '<strong>' + name + '</strong> (' + device.systemType + ')<br>' +
+            '<small style="color: #666;">Port: ' + device.port + ' | VID:PID ' + device.vendorId + ':' + device.productId +
+            (device.config && device.config.boardPrefix ? ' | prefix ' + device.config.boardPrefix : '') +
+            '</small><br>' + actionHtml;
           devicesDiv.appendChild(deviceDiv);
         });
         devicesDiv.style.display = 'block';
@@ -1031,6 +1043,8 @@ async function loadUpdateStatus() {
     const msgEl = document.getElementById('updateMessage');
     const btnInstall = document.getElementById('btnInstallUpdate');
     const btnCheck = document.getElementById('btnCheckUpdate');
+    const btnLocal = document.getElementById('btnInstallLocalDeb');
+    const fileInput = document.getElementById('updateDebFile');
     if (installed) {
       installed.textContent = data.currentVersion != null ? data.currentVersion : '—';
     }
@@ -1040,15 +1054,19 @@ async function loadUpdateStatus() {
     if (msgEl) {
       msgEl.textContent = data.message != null ? data.message : '';
     }
+    const busy = ['checking', 'downloading', 'installing'].includes(data.state);
     if (btnInstall) {
-      const busy = ['checking', 'downloading', 'installing'].includes(data.state);
       btnInstall.disabled = !data.hasUpdate || busy;
     }
     if (btnCheck) {
-      const busy = ['checking', 'downloading', 'installing'].includes(data.state);
       btnCheck.disabled = busy;
     }
-    const busy = ['checking', 'downloading', 'installing'].includes(data.state);
+    if (fileInput) {
+      fileInput.disabled = busy;
+    }
+    if (btnLocal) {
+      btnLocal.disabled = busy;
+    }
     if (busy && !updatePollInterval) {
       updatePollInterval = setInterval(loadUpdateStatus, 2000);
     } else if (!busy && updatePollInterval) {
@@ -1106,8 +1124,54 @@ async function installUpdate() {
   }
 }
 
+function openLocalDebPicker() {
+  const fileInput = document.getElementById('updateDebFile');
+  if (!fileInput || fileInput.disabled) return;
+  fileInput.value = '';
+  fileInput.click();
+}
+
+async function installLocalDebFromFile(file) {
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.deb')) {
+    showStatus('File must be a .deb package.', 'error');
+    return;
+  }
+  if (!confirm('Install ' + file.name + '? The service may restart.')) {
+    return;
+  }
+  const btn = document.getElementById('btnInstallLocalDeb');
+  const fileInput = document.getElementById('updateDebFile');
+  if (btn) btn.disabled = true;
+  if (fileInput) fileInput.disabled = true;
+  try {
+    const url = '/api/update/upload?filename=' + encodeURIComponent(file.name);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file
+    });
+    const data = await readJsonOrError(res);
+    if (!res.ok) {
+      throw new Error(data.error || res.statusText);
+    }
+    if (fileInput) fileInput.value = '';
+    await loadUpdateStatus();
+    showStatus(data.message || 'Local install started. Watch status below; the page may reconnect when the service restarts.', 'success');
+  } catch (e) {
+    showStatus('Local install failed: ' + e.message, 'error');
+  } finally {
+    loadUpdateStatus();
+  }
+}
+
 document.getElementById('btnCheckUpdate')?.addEventListener('click', checkForUpdates);
 document.getElementById('btnInstallUpdate')?.addEventListener('click', installUpdate);
+document.getElementById('btnInstallLocalDeb')?.addEventListener('click', openLocalDebPicker);
+document.getElementById('updateDebFile')?.addEventListener('change', function () {
+  const file = this.files && this.files[0];
+  if (file) installLocalDebFromFile(file);
+});
 
 function buildWifiQrPayload(ssid, password) {
   if (!ssid || !password) {
@@ -1370,6 +1434,325 @@ document.getElementById('btnWifiApplyFallback')?.addEventListener('click', apply
 document.getElementById('btnWifiScan')?.addEventListener('click', scanWifi);
 document.getElementById('btnWifiConnect')?.addEventListener('click', connectWifi);
 
+// --- Sensors page ---
+let sensorFlashPollTimer = null;
+
+function updateSensorFlashChannels() {
+  const prefix = (document.getElementById('sensorFlashPrefix')?.value || '').trim().toUpperCase();
+  const el = document.getElementById('sensorFlashChannels');
+  if (!el) return;
+  if (!/^[A-Z]{1,2}$/.test(prefix)) {
+    el.textContent = 'Channels: enter a valid prefix';
+    return;
+  }
+  const optical = [];
+  for (let i = 0; i <= 6; i++) optical.push(prefix + i);
+  const digital = [];
+  for (let p = 2; p <= 12; p++) digital.push(prefix + 'D' + p);
+  el.textContent = 'Optical: ' + optical.join(', ') + ' · Digital (INPUT_PULLUP): ' + digital.join(', ');
+}
+
+function renderSensorLedGroup(title, channels) {
+  if (!channels.length) return '';
+  const leds = channels.map((ch) => {
+    const on = ch.state === 1;
+    const kind = ch.kind === 'digital' ? 'kind-digital' : 'kind-analog';
+    return '<div class="sensors-led ' + kind + (on ? ' on' : '') + '" title="' +
+      (ch.id || '') + ': ' + (on ? 'DETECTED' : 'CLEAR') + '">' +
+      '<span class="sensors-led-lamp" aria-hidden="true"></span>' +
+      '<span class="sensors-led-label">' + (ch.label || '') + '</span>' +
+      '<span class="sensors-led-id">' + (ch.id || '') + '</span>' +
+      '</div>';
+  }).join('');
+  return '<div class="sensors-led-group">' +
+    '<div class="sensors-led-group-label">' + title + '</div>' +
+    '<div class="sensors-led-row">' + leds + '</div></div>';
+}
+
+function renderSensorLedPanel(channels) {
+  const list = channels || [];
+  const optical = list.filter((c) => c.kind !== 'digital');
+  const digital = list.filter((c) => c.kind === 'digital');
+  if (!optical.length && !digital.length) {
+    return '<p class="wifi-hint">No channel map yet (waiting for prefix / READY).</p>';
+  }
+  return '<div class="sensors-led-panel">' +
+    renderSensorLedGroup('Optical A0–A6', optical) +
+    renderSensorLedGroup('Digital D2–D12 (pull-up)', digital) +
+    '</div>';
+}
+
+async function loadSensorFlashPorts() {
+  const select = document.getElementById('sensorFlashPort');
+  if (!select) return;
+  try {
+    const res = await fetch('/api/ports');
+    const data = await res.json();
+    const prev = select.value;
+    select.innerHTML = '<option value="">Select port...</option>';
+    (data.ports || []).forEach((p) => {
+      const opt = document.createElement('option');
+      opt.value = p;
+      opt.textContent = p;
+      select.appendChild(opt);
+    });
+    if (prev && (data.ports || []).includes(prev)) {
+      select.value = prev;
+    }
+  } catch (err) {
+    /* ignore */
+  }
+}
+
+async function loadSensorsToolchain() {
+  const el = document.getElementById('sensorsToolchainStatus');
+  if (!el) return;
+  try {
+    const res = await fetch('/api/sensors/toolchain');
+    const data = await res.json();
+    if (data.arduinoCli && data.fqbnReady) {
+      el.textContent = 'Ready (' + data.fqbn + ')';
+      el.style.color = '#0a7a2f';
+    } else if (data.arduinoCli) {
+      el.textContent = 'arduino-cli present; AVR core missing — run: sudo panelsdcc-connect-arduino-install';
+      el.style.color = '#a05a00';
+    } else {
+      el.textContent = 'Missing — run: sudo panelsdcc-connect-arduino-install';
+      el.style.color = '#a00';
+    }
+  } catch (err) {
+    el.textContent = 'Unable to check toolchain';
+  }
+}
+
+async function loadSensorsBoards() {
+  const list = document.getElementById('sensorsBoardList');
+  const candidatesEl = document.getElementById('sensorsCandidateList');
+  const stubs = document.getElementById('sensorsTransportStubs');
+  if (!list) return;
+  try {
+    const res = await fetch('/api/sensors');
+    const data = await res.json();
+    const boards = data.boards || [];
+    if (!boards.length) {
+      list.innerHTML = '<p class="wifi-hint">No USB sensor boards connected yet.</p>';
+    } else {
+      list.innerHTML = '';
+      boards.forEach((b) => {
+        const row = document.createElement('div');
+        row.className = 'sensors-board-row';
+        const prefix = b.prefix || '—';
+        row.innerHTML =
+          '<div class="sensors-board-header">' +
+          '<div><strong>Prefix ' + prefix + '</strong> · ' + (b.transport || 'usb') +
+          ' · <code>' + (b.endpoint || '') + '</code> · ' + (b.status || '') + '</div>' +
+          '<div class="sensors-board-actions"></div></div>' +
+          renderSensorLedPanel(b.channels);
+        const actions = row.querySelector('.sensors-board-actions');
+        if (b.status === 'listening') {
+          const rel = document.createElement('button');
+          rel.className = 'btn btn-secondary btn-small';
+          rel.textContent = 'Release port';
+          rel.onclick = () => releaseSensorBoard(b.id);
+          actions.appendChild(rel);
+          const flash = document.createElement('button');
+          flash.className = 'btn btn-primary btn-small';
+          flash.textContent = 'Flash again';
+          flash.onclick = () => {
+            document.getElementById('sensorFlashPort').value = b.endpoint;
+            if (b.prefix) document.getElementById('sensorFlashPrefix').value = b.prefix;
+            updateSensorFlashChannels();
+            window.scrollTo({ top: document.getElementById('btnSensorFlash').offsetTop - 40, behavior: 'smooth' });
+          };
+          actions.appendChild(flash);
+        } else if (b.status === 'released' || b.status === 'flashing') {
+          const resume = document.createElement('button');
+          resume.className = 'btn btn-primary btn-small';
+          resume.textContent = 'Resume';
+          resume.disabled = b.status === 'flashing';
+          resume.onclick = () => resumeSensorBoard(b.id);
+          actions.appendChild(resume);
+        }
+        list.appendChild(row);
+      });
+    }
+
+    if (candidatesEl) {
+      const candidates = data.candidates || [];
+      if (!candidates.length) {
+        candidatesEl.innerHTML = '<p class="wifi-hint">No USB serial candidates waiting for probe.</p>';
+      } else {
+        candidatesEl.innerHTML = '';
+        candidates.forEach((c) => {
+          const row = document.createElement('div');
+          row.className = 'sensors-board-row';
+          const cool = c.cooldownMs ? (' · auto-retry in ~' + Math.ceil(c.cooldownMs / 1000) + 's') : '';
+          row.innerHTML =
+            '<div class="sensors-board-header">' +
+            '<div><strong>' + (c.name || 'USB candidate') + '</strong> · <code>' +
+            (c.port || c.endpoint || '') + '</code>' + cool + '</div>' +
+            '<div class="sensors-board-actions"></div></div>';
+          const actions = row.querySelector('.sensors-board-actions');
+          const probeBtn = document.createElement('button');
+          probeBtn.className = 'btn btn-primary btn-small';
+          probeBtn.textContent = 'Probe now';
+          probeBtn.onclick = () => probeSensorPort(c.port || c.endpoint, probeBtn);
+          actions.appendChild(probeBtn);
+          candidatesEl.appendChild(row);
+        });
+      }
+    }
+
+    if (stubs && data.transports) {
+      stubs.innerHTML = '';
+      data.transports.forEach((t) => {
+        if (t.id === 'usb') return;
+        const card = document.createElement('div');
+        card.className = 'sensors-stub-card';
+        card.innerHTML = '<strong>' + (t.label || t.id) + '</strong><br><span class="wifi-hint">' +
+          (t.note || 'Coming soon') + '</span>';
+        stubs.appendChild(card);
+      });
+    }
+  } catch (err) {
+    list.innerHTML = '<p class="wifi-hint">Failed to load boards: ' + err.message + '</p>';
+  }
+}
+
+async function probeSensorPort(port, buttonEl) {
+  if (!port) return;
+  if (buttonEl) {
+    buttonEl.disabled = true;
+    buttonEl.textContent = 'Probing…';
+  }
+  try {
+    const res = await fetch('/api/sensors/probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ port })
+    });
+    const data = await readJsonOrError(res);
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || ('Probe result: ' + (data.systemType || res.statusText)));
+    }
+    if (data.systemType === 'panelsdcc-sensor-board') {
+      showStatus('Sensor board on ' + port + (data.prefix ? ' (prefix ' + data.prefix + ')' : ''), 'success');
+    } else if (data.systemType === 'dccpp') {
+      showStatus('Port ' + port + ' is DCC++ — use the DCC page to connect', 'success');
+    } else {
+      showStatus('Probe finished: ' + (data.systemType || 'unknown'), 'success');
+    }
+    loadSensorsBoards();
+  } catch (err) {
+    showStatus('Probe failed: ' + err.message, 'error');
+    loadSensorsBoards();
+  } finally {
+    if (buttonEl) {
+      buttonEl.disabled = false;
+      buttonEl.textContent = 'Probe now';
+    }
+  }
+}
+
+async function releaseSensorBoard(id) {
+  try {
+    const res = await fetch('/api/sensors/' + encodeURIComponent(id) + '/release', { method: 'POST' });
+    const data = await readJsonOrError(res);
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    showStatus('Sensor port released', 'success');
+    loadSensorsBoards();
+  } catch (err) {
+    showStatus('Release failed: ' + err.message, 'error');
+  }
+}
+
+async function resumeSensorBoard(id) {
+  try {
+    const res = await fetch('/api/sensors/' + encodeURIComponent(id) + '/resume', { method: 'POST' });
+    const data = await readJsonOrError(res);
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    showStatus('Sensor board resumed', 'success');
+    loadSensorsBoards();
+  } catch (err) {
+    showStatus('Resume failed: ' + err.message, 'error');
+  }
+}
+
+async function flashSensorBoard() {
+  const port = document.getElementById('sensorFlashPort')?.value;
+  const prefix = (document.getElementById('sensorFlashPrefix')?.value || '').trim().toUpperCase();
+  const logEl = document.getElementById('sensorFlashLog');
+  if (!port) {
+    showStatus('Select a port to flash', 'error');
+    return;
+  }
+  if (!/^[A-Z]{1,2}$/.test(prefix)) {
+    showStatus('Prefix must be A–Z or AA–ZZ', 'error');
+    return;
+  }
+  try {
+    const res = await fetch('/api/sensors/flash', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ port, prefix })
+    });
+    const data = await readJsonOrError(res);
+    if (!res.ok && res.status !== 202) {
+      throw new Error(data.error || res.statusText);
+    }
+    showStatus('Flash started for prefix ' + prefix, 'success');
+    if (sensorFlashPollTimer) clearInterval(sensorFlashPollTimer);
+    sensorFlashPollTimer = setInterval(pollSensorFlashStatus, 1000);
+    pollSensorFlashStatus();
+  } catch (err) {
+    showStatus('Flash failed: ' + err.message, 'error');
+    if (logEl) logEl.textContent = err.message;
+  }
+}
+
+async function pollSensorFlashStatus() {
+  const logEl = document.getElementById('sensorFlashLog');
+  try {
+    const res = await fetch('/api/sensors/flash/status');
+    const data = await res.json();
+    if (logEl) {
+      logEl.textContent = (data.log || []).join('\n') + (data.error ? '\nERROR: ' + data.error : '');
+    }
+    if (data.state === 'success' || data.state === 'failed' || data.state === 'idle') {
+      if (sensorFlashPollTimer) {
+        clearInterval(sensorFlashPollTimer);
+        sensorFlashPollTimer = null;
+      }
+      loadSensorsBoards();
+      if (data.state === 'success') {
+        showStatus('Flash complete', 'success');
+      } else if (data.state === 'failed') {
+        showStatus('Flash failed: ' + (data.error || 'see log'), 'error');
+      }
+    }
+  } catch (err) {
+    /* ignore poll errors */
+  }
+}
+
+document.getElementById('sensorFlashPrefix')?.addEventListener('input', updateSensorFlashChannels);
+document.getElementById('btnSensorFlash')?.addEventListener('click', flashSensorBoard);
+
+function refreshSensorsPage() {
+  loadSensorsToolchain();
+  loadSensorsBoards();
+  loadSensorFlashPorts();
+  updateSensorFlashChannels();
+}
+
+const _origUpdatePageSectionState = updatePageSectionState;
+updatePageSectionState = function () {
+  _origUpdatePageSectionState();
+  if (currentPageFromHash() === 'sensors') {
+    refreshSensorsPage();
+  }
+};
+
 // Initialize on page load
 ensureDefaultPageHash();
 setupHashNavigation();
@@ -1381,10 +1764,17 @@ loadConnections();
 loadUpdateStatus();
 loadWifiStatus();
 scanWifi();
+refreshSensorsPage();
 setInterval(loadConnections, 5000);
 setInterval(loadPorts, 5000);
 setInterval(loadUpdateStatus, 15000);
 setInterval(loadWifiStatus, 15000);
+setInterval(() => {
+  if (currentPageFromHash() === 'sensors') {
+    loadSensorsBoards();
+    loadSensorFlashPorts();
+  }
+}, 1500);
 connectEventStream();
 connectWebSocket();
 initThrottleFunctions();
