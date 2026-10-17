@@ -14,11 +14,19 @@ import cc.panelsd.connect.core.events.DccEventBus;
 import cc.panelsd.connect.core.impl.dccpp.DccppConnection;
 import cc.panelsd.connect.core.impl.nce.NceSerialConnection;
 import cc.panelsd.connect.core.impl.nce.NceUsbConnection;
+import cc.panelsd.connect.core.impl.sensor.BoardProfile;
+import cc.panelsd.connect.core.impl.sensor.BluetoothNodeSupport;
+import cc.panelsd.connect.core.impl.sensor.NodeInventory;
+import cc.panelsd.connect.core.impl.sensor.NodeOutputMirror;
+import cc.panelsd.connect.core.impl.sensor.NodeOutputSchemas;
+import cc.panelsd.connect.core.impl.sensor.NodeSession;
 import cc.panelsd.connect.core.impl.sensor.SensorBoardFlasher;
 import cc.panelsd.connect.core.impl.sensor.SensorBoardSession;
 import cc.panelsd.connect.core.impl.sensor.SensorBoardSupport;
+import cc.panelsd.connect.core.impl.sensor.VirtualNodeSession;
 import cc.panelsd.connect.core.impl.xnet.elite.XNetEliteConnection;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.io.IOException;
@@ -49,6 +57,7 @@ public final class DccIoServiceImpl implements DccIoService {
     private final Map<String, CommandStationConnection> connections = new ConcurrentHashMap<>();
     private final Map<String, ThrottleSession> throttles = new ConcurrentHashMap<>();
     private final Map<String, SensorBoardSession> sensorSessions = new ConcurrentHashMap<>();
+    private final Map<String, VirtualNodeSession> shimSessions = new ConcurrentHashMap<>();
     /** Ports held released for flashing — skip auto-connect until resume. */
     private final Map<String, ReleasedSensorPort> releasedSensorPorts = new ConcurrentHashMap<>();
     private final List<JsonObject> sensorEventRing = Collections.synchronizedList(new ArrayList<>());
@@ -61,6 +70,8 @@ public final class DccIoServiceImpl implements DccIoService {
     private final UsbSerialProbe usbProbe = new UsbSerialProbe();
     private final UsbProbeCache probeCache = new UsbProbeCache();
     private final SensorBoardFlasher sensorFlasher = new SensorBoardFlasher();
+    private final NodeInventory nodeInventory = new NodeInventory();
+    private final NodeOutputMirror nodeOutputMirror = new NodeOutputMirror();
 
     /** Ports that recently classified as unknown — avoid hammering/resetting devices. */
     private final Map<String, Long> probeCooldownUntil = new ConcurrentHashMap<>();
@@ -109,6 +120,7 @@ public final class DccIoServiceImpl implements DccIoService {
                 publisher.accept(msg);
             }
         };
+        nodeOutputMirror.setSensorHardwarePublisher(this.sensorHardwarePublisher);
     }
 
     private void recordSensorHardwareEvent(JsonObject msg) {
@@ -136,8 +148,12 @@ public final class DccIoServiceImpl implements DccIoService {
     }
 
     private JsonArray channelsJsonForPrefix(String prefix) {
+        return channelsJsonForPrefix(prefix, BoardProfile.NANO_AVR);
+    }
+
+    private JsonArray channelsJsonForPrefix(String prefix, String boardType) {
         JsonArray channels = new JsonArray();
-        for (SensorBoardSupport.ChannelDef def : SensorBoardSupport.channelDefs(prefix)) {
+        for (SensorBoardSupport.ChannelDef def : SensorBoardSupport.channelDefs(prefix, boardType)) {
             JsonObject ch = new JsonObject();
             ch.addProperty("id", def.id);
             ch.addProperty("label", def.label);
@@ -145,7 +161,34 @@ public final class DccIoServiceImpl implements DccIoService {
             ch.addProperty("state", sensorChannelStates.getOrDefault(def.id, 0));
             channels.add(ch);
         }
+        NodeInventory.NodeRecord rec = nodeInventory.findByPrefix(prefix);
+        appendVirtualChannels(channels, prefix, rec != null ? rec.outputs : null);
         return channels;
+    }
+
+    /** Append LC virtual feedback channels ({@code kind: virtual}) into a channels array. */
+    private void appendVirtualChannels(JsonArray channels, String prefix, JsonArray outputs) {
+        if (channels == null || prefix == null) {
+            return;
+        }
+        Set<String> existing = new HashSet<>();
+        for (JsonElement el : channels) {
+            if (el.isJsonObject() && el.getAsJsonObject().has("id")) {
+                existing.add(el.getAsJsonObject().get("id").getAsString());
+            }
+        }
+        for (SensorBoardSupport.ChannelDef def : SensorBoardSupport.virtualChannelDefs(prefix, outputs)) {
+            if (existing.contains(def.id)) {
+                continue;
+            }
+            JsonObject ch = new JsonObject();
+            ch.addProperty("id", def.id);
+            ch.addProperty("label", def.label);
+            ch.addProperty("kind", def.kind);
+            ch.addProperty("state", sensorChannelStates.getOrDefault(def.id, 0));
+            channels.add(ch);
+            existing.add(def.id);
+        }
     }
 
     /**
@@ -320,6 +363,9 @@ public final class DccIoServiceImpl implements DccIoService {
             if (result.prefix != null) {
                 device.config.put("boardPrefix", result.prefix);
             }
+            if (result.boardType != null) {
+                device.config.put("boardType", BoardProfile.normalize(result.boardType));
+            }
         } else if (result.type == DeviceType.DCCPP) {
             device.systemType = DeviceDiscoveryService.SYSTEM_TYPE_DCCPP;
             device.name = "DCC++ (CH340)";
@@ -336,19 +382,61 @@ public final class DccIoServiceImpl implements DccIoService {
             return;
         }
         String prefix = device.config.get("boardPrefix");
+        String boardType = BoardProfile.normalize(device.config.get("boardType"));
         SensorBoardSession session = new SensorBoardSession(
                 device.port,
                 prefix,
                 device.byPath,
+                boardType,
                 () -> sensorHardwarePublisher);
         try {
             session.start();
             sensorSessions.put(sessionId, session);
             connectedPorts.add(device.port);
             portToConnectionId.put(device.port, sessionId);
+            rememberUsbNode(session);
         } catch (Exception e) {
             System.err.println("Failed to start sensor board on " + device.port + ": " + e.getMessage());
             session.close();
+        }
+    }
+
+    private void rememberUsbNode(SensorBoardSession session) {
+        NodeInventory.NodeRecord rec = new NodeInventory.NodeRecord();
+        rec.id = session.getId();
+        rec.prefix = session.getPrefix();
+        rec.boardType = session.getBoardType();
+        rec.transport = SensorBoardSupport.TRANSPORT_USB;
+        rec.endpoint = session.getEndpoint();
+        NodeInventory.NodeRecord existing = nodeInventory.findByPrefix(session.getPrefix());
+        if (existing != null) {
+            rec.pins = existing.pins;
+            rec.outputs = existing.outputs;
+            rec.opticalDistricts = existing.opticalDistricts;
+            rec.config = existing.config;
+        }
+        nodeInventory.upsert(rec);
+        // Re-push CFG after USB reconnect (board may have EEPROM; Connect is source of truth).
+        // Delay so AVR reset/boot finishes before the serial line is written.
+        if (rec.config != null) {
+            final String sessionId = session.getId();
+            final JsonObject cfg = rec.config.deepCopy();
+            final JsonArray outs = rec.outputs != null ? rec.outputs.deepCopy() : new JsonArray();
+            final String prefix = session.getPrefix();
+            deviceMonitor.schedule(() -> {
+                SensorBoardSession live = sensorSessions.get(sessionId);
+                if (live == null || !live.isRunning()) {
+                    return;
+                }
+                try {
+                    live.sendCommand("CFG " + cfg);
+                    nodeOutputMirror.syncConfig(prefix, outs);
+                } catch (Exception e) {
+                    System.err.println("Failed to re-push CFG to " + sessionId + ": " + e.getMessage());
+                }
+            }, 2, TimeUnit.SECONDS);
+        } else if (rec.outputs != null) {
+            nodeOutputMirror.syncConfig(session.getPrefix(), rec.outputs);
         }
     }
 
@@ -438,22 +526,29 @@ public final class DccIoServiceImpl implements DccIoService {
 
         for (Map.Entry<String, SensorBoardSession> e : sensorSessions.entrySet()) {
             SensorBoardSession s = e.getValue();
-            JsonObject row = new JsonObject();
-            row.addProperty("id", e.getKey());
-            row.addProperty("transport", SensorBoardSupport.TRANSPORT_USB);
-            row.addProperty("endpoint", s.getPortName());
-            if (s.getPrefix() != null) {
-                row.addProperty("prefix", s.getPrefix());
-            }
+            JsonObject row = boardRow(s.getId(), s.getTransport(), s.getEndpoint(), s.getPrefix(),
+                    s.getBoardType(), SensorBoardSupport.STATUS_LISTENING, false);
             if (s.getByPath() != null) {
                 row.addProperty("byPath", s.getByPath());
             }
-            row.addProperty("status", SensorBoardSupport.STATUS_LISTENING);
             if (s.getPrefix() != null) {
-                row.add("channels", channelsJsonForPrefix(s.getPrefix()));
+                row.add("channels", channelsJsonForPrefix(s.getPrefix(), s.getBoardType()));
             }
+            attachInventory(row, s.getPrefix());
             boards.add(row);
             seenPorts.add(SensorBoardSupport.barePort(s.getPortName()));
+        }
+
+        for (VirtualNodeSession shim : shimSessions.values()) {
+            JsonObject row = boardRow(shim.getId(), shim.getTransport(), shim.getEndpoint(), shim.getPrefix(),
+                    shim.getBoardType(), SensorBoardSupport.STATUS_LISTENING, true);
+            row.add("channels", shim.channelsJson());
+            attachInventory(row, shim.getPrefix());
+            if (row.has("channels") && row.has("outputs")) {
+                appendVirtualChannels(row.getAsJsonArray("channels"), shim.getPrefix(),
+                        row.getAsJsonArray("outputs"));
+            }
+            boards.add(row);
         }
 
         for (ReleasedSensorPort r : releasedSensorPorts.values()) {
@@ -461,15 +556,10 @@ public final class DccIoServiceImpl implements DccIoService {
             if (seenPorts.contains(bare)) {
                 continue;
             }
-            JsonObject row = new JsonObject();
-            row.addProperty("id", r.id);
-            row.addProperty("transport", SensorBoardSupport.TRANSPORT_USB);
-            row.addProperty("endpoint", r.port);
-            if (r.prefix != null) {
-                row.addProperty("prefix", r.prefix);
-            }
-            if (r.byPath != null) {
-                row.addProperty("byPath", r.byPath);
+            String boardType = BoardProfile.NANO_AVR;
+            NodeInventory.NodeRecord inv = nodeInventory.findByPrefix(r.prefix);
+            if (inv != null && inv.boardType != null) {
+                boardType = inv.boardType;
             }
             String flashPort = null;
             JsonObject flashStatus = sensorFlasher.statusJson();
@@ -479,10 +569,15 @@ public final class DccIoServiceImpl implements DccIoService {
             String status = sensorFlasher.isBusy() && bare.equals(SensorBoardSupport.barePort(flashPort))
                     ? SensorBoardSupport.STATUS_FLASHING
                     : SensorBoardSupport.STATUS_RELEASED;
-            row.addProperty("status", status);
-            if (r.prefix != null) {
-                row.add("channels", channelsJsonForPrefix(r.prefix));
+            JsonObject row = boardRow(r.id, SensorBoardSupport.TRANSPORT_USB, r.port, r.prefix,
+                    boardType, status, false);
+            if (r.byPath != null) {
+                row.addProperty("byPath", r.byPath);
             }
+            if (r.prefix != null) {
+                row.add("channels", channelsJsonForPrefix(r.prefix, boardType));
+            }
+            attachInventory(row, r.prefix);
             boards.add(row);
         }
 
@@ -525,26 +620,121 @@ public final class DccIoServiceImpl implements DccIoService {
         JsonObject root = new JsonObject();
         root.add("boards", boards);
         root.add("candidates", candidates);
+        root.addProperty("suggestedPrefix", nodeInventory.suggestPrefix());
+        JsonArray profiles = new JsonArray();
+        for (BoardProfile p : BoardProfile.all()) {
+            JsonObject pr = new JsonObject();
+            pr.addProperty("id", p.id);
+            pr.addProperty("label", p.label);
+            pr.addProperty("fqbn", p.fqbn);
+            pr.addProperty("defaultTransport", p.defaultTransport);
+            if (p.ambientRefLabel != null) {
+                pr.addProperty("ambientRefLabel", p.ambientRefLabel);
+            }
+            JsonArray defaultOptical = new JsonArray();
+            for (String label : p.defaultOpticalLabels) {
+                defaultOptical.add(label);
+            }
+            pr.add("defaultOpticalLabels", defaultOptical);
+            JsonArray defaultDigital = new JsonArray();
+            for (String label : p.defaultDigitalLabels) {
+                defaultDigital.add(label);
+            }
+            pr.add("defaultDigitalLabels", defaultDigital);
+            JsonArray pinArr = new JsonArray();
+            for (BoardProfile.PinDef pin : p.pins) {
+                JsonObject po = new JsonObject();
+                po.addProperty("silkLabel", pin.silkLabel);
+                JsonArray caps = new JsonArray();
+                for (String c : pin.capabilities) {
+                    caps.add(c);
+                }
+                po.add("capabilities", caps);
+                pinArr.add(po);
+            }
+            pr.add("pins", pinArr);
+            profiles.add(pr);
+        }
+        root.add("boardProfiles", profiles);
+        root.add("outputTypes", NodeOutputSchemas.schemasJson().getAsJsonArray("types"));
+
         JsonArray transports = new JsonArray();
         JsonObject usb = new JsonObject();
         usb.addProperty("id", SensorBoardSupport.TRANSPORT_USB);
         usb.addProperty("available", true);
-        usb.addProperty("label", "USB (Nano / CH340)");
+        usb.addProperty("label", "USB (Nano / Mega AVR)");
         transports.add(usb);
+        JsonObject shim = new JsonObject();
+        shim.addProperty("id", SensorBoardSupport.TRANSPORT_SHIM);
+        shim.addProperty("available", true);
+        shim.addProperty("label", "Virtual (UI testing)");
+        shim.addProperty("note", "In-process shim boards — no hardware required");
+        transports.add(shim);
         JsonObject wifi = new JsonObject();
         wifi.addProperty("id", SensorBoardSupport.TRANSPORT_WIFI);
         wifi.addProperty("available", false);
         wifi.addProperty("label", "Wi‑Fi (ESP32)");
-        wifi.addProperty("note", "Coming soon — Connect will manage Wi‑Fi join later");
+        wifi.addProperty("note", "Later — use Bluetooth SPP for ESP32 nodes");
         transports.add(wifi);
-        JsonObject ble = new JsonObject();
-        ble.addProperty("id", SensorBoardSupport.TRANSPORT_BLE);
-        ble.addProperty("available", false);
-        ble.addProperty("label", "Bluetooth");
-        ble.addProperty("note", "Coming soon — Connect will manage pairing later");
-        transports.add(ble);
+        transports.add(BluetoothNodeSupport.statusJson());
         root.add("transports", transports);
+        root.addProperty("outputAnimating", nodeOutputMirror.anyAnimating());
         return root;
+    }
+
+    private static JsonObject boardRow(
+            String id, String transport, String endpoint, String prefix,
+            String boardType, String status, boolean virtual) {
+        JsonObject row = new JsonObject();
+        row.addProperty("id", id);
+        row.addProperty("transport", transport);
+        row.addProperty("endpoint", endpoint);
+        if (prefix != null) {
+            row.addProperty("prefix", prefix);
+        }
+        if (boardType != null) {
+            row.addProperty("boardType", boardType);
+        }
+        row.addProperty("status", status);
+        row.addProperty("virtual", virtual);
+        return row;
+    }
+
+    private void attachInventory(JsonObject row, String prefix) {
+        NodeInventory.NodeRecord rec = nodeInventory.findByPrefix(prefix);
+        if (rec == null) {
+            return;
+        }
+        if (rec.outputs != null) {
+            row.add("outputs", rec.outputs);
+            ensureMirrorSynced(prefix, rec.outputs);
+        }
+        if (rec.pins != null) {
+            row.add("pins", rec.pins);
+        }
+        if (rec.opticalDistricts != null) {
+            row.add("opticalDistricts", rec.opticalDistricts);
+        } else if (rec.config != null && rec.config.has("opticalDistricts")
+                && rec.config.get("opticalDistricts").isJsonArray()) {
+            row.add("opticalDistricts", rec.config.getAsJsonArray("opticalDistricts"));
+        }
+        if (rec.config != null) {
+            row.add("config", rec.config);
+        }
+        JsonArray states = nodeOutputMirror.statesJson(prefix);
+        row.add("outputStates", states);
+        row.addProperty("outputStatesMirrored", true);
+        row.addProperty("outputAnimating", nodeOutputMirror.isAnimating(prefix));
+    }
+
+    private void ensureMirrorSynced(String prefix, JsonArray outputs) {
+        if (outputs == null) {
+            return;
+        }
+        // First load, size mismatch, or legacy outputs that had no triggers[] until upgrade.
+        if (nodeOutputMirror.needsSync(prefix, outputs)) {
+            nodeOutputMirror.syncConfig(prefix, outputs);
+        }
     }
 
     public JsonArray sensorEventsJson() {
@@ -688,9 +878,13 @@ public final class DccIoServiceImpl implements DccIoService {
     }
 
     public synchronized boolean flashSensorBoard(String portName, String prefix) {
+        return flashSensorBoard(portName, prefix, BoardProfile.NANO_AVR);
+    }
+
+    public synchronized boolean flashSensorBoard(String portName, String prefix, String boardType) {
+        String type = BoardProfile.normalize(boardType);
         String bare = SensorBoardSupport.barePort(portName);
         String sessionId = SensorBoardSupport.sessionIdForPort(bare);
-        // Release if listening
         if (sensorSessions.containsKey(sessionId)) {
             releaseSensorBoard(sessionId);
         } else if (!releasedSensorPorts.containsKey(bare)) {
@@ -702,10 +896,17 @@ public final class DccIoServiceImpl implements DccIoService {
                     prev.id, bare, prefix != null ? prefix : prev.prefix, prev.byPath));
         }
 
-        return sensorFlasher.startFlash(bare, prefix, success -> {
+        NodeInventory.NodeRecord rec = new NodeInventory.NodeRecord();
+        rec.id = sessionId;
+        rec.prefix = SensorBoardSupport.normalizePrefix(prefix);
+        rec.boardType = type;
+        rec.transport = SensorBoardSupport.TRANSPORT_USB;
+        rec.endpoint = bare;
+        nodeInventory.upsert(rec);
+
+        return sensorFlasher.startFlash(bare, prefix, type, success -> {
             if (success) {
                 try {
-                    // Update held prefix then resume
                     ReleasedSensorPort held = releasedSensorPorts.get(bare);
                     if (held != null) {
                         releasedSensorPorts.put(bare, new ReleasedSensorPort(
@@ -1014,6 +1215,273 @@ public final class DccIoServiceImpl implements DccIoService {
         }
     }
 
+    public NodeInventory getNodeInventory() {
+        return nodeInventory;
+    }
+
+    public JsonObject createShimBoard(String prefix, String boardType) {
+        String p = prefix != null && !prefix.isBlank()
+                ? SensorBoardSupport.normalizePrefix(prefix)
+                : nodeInventory.suggestPrefix();
+        if (!SensorBoardSupport.isValidPrefix(p)) {
+            throw new IllegalArgumentException("Invalid prefix: " + prefix);
+        }
+        String shimId = SensorBoardSupport.sessionIdForShim(p);
+        if (shimSessions.containsKey(shimId)) {
+            removeShimBoard(shimId);
+        }
+        String type = BoardProfile.normalize(boardType);
+        VirtualNodeSession session = new VirtualNodeSession(p, type, () -> sensorHardwarePublisher);
+        session.start();
+        shimSessions.put(session.getId(), session);
+        NodeInventory.NodeRecord rec = NodeInventory.NodeRecord.shim(p, type);
+        nodeInventory.upsert(rec);
+        sensorFlasher.startShimFlash(p, type, ok -> {
+        });
+        JsonObject out = new JsonObject();
+        out.addProperty("ok", true);
+        out.addProperty("id", session.getId());
+        out.addProperty("prefix", p);
+        out.addProperty("boardType", type);
+        out.addProperty("transport", SensorBoardSupport.TRANSPORT_SHIM);
+        return out;
+    }
+
+    public boolean removeShimBoard(String id) {
+        VirtualNodeSession session = shimSessions.remove(id);
+        if (session != null) {
+            nodeOutputMirror.remove(session.getPrefix());
+            session.close();
+            nodeInventory.removeById(id);
+            return true;
+        }
+        // also try by prefix-derived id
+        if (id != null && id.startsWith("shim_")) {
+            return false;
+        }
+        return false;
+    }
+
+    public JsonObject simulateShimChannel(String id, String hardwareId, String label, int state) {
+        VirtualNodeSession session = shimSessions.get(id);
+        if (session == null) {
+            throw new IllegalArgumentException("Shim board not found: " + id);
+        }
+        if (hardwareId != null && !hardwareId.isBlank()) {
+            session.simulateChannel(hardwareId, state);
+        } else if (label != null) {
+            session.simulateByLabel(label, state);
+        } else {
+            throw new IllegalArgumentException("hardwareId or label required");
+        }
+        JsonObject out = new JsonObject();
+        out.addProperty("ok", true);
+        out.add("channels", session.channelsJson());
+        return out;
+    }
+
+    public JsonObject pushNodeConfig(String id, JsonObject config) {
+        NodeSession session = findNodeSession(id);
+        if (session == null) {
+            throw new IllegalArgumentException("Node not found: " + id);
+        }
+        String line = "CFG " + config.toString();
+        session.sendCommand(line);
+        NodeInventory.NodeRecord rec = nodeInventory.findById(id);
+        if (rec == null) {
+            rec = nodeInventory.findByPrefix(session.getPrefix());
+        }
+        if (rec == null) {
+            rec = new NodeInventory.NodeRecord();
+            rec.id = session.getId();
+            rec.prefix = session.getPrefix();
+            rec.boardType = session.getBoardType();
+            rec.transport = session.getTransport();
+            rec.endpoint = session.getEndpoint();
+        }
+        rec.config = config.deepCopy();
+        if (config.has("outputs") && config.get("outputs").isJsonArray()) {
+            rec.outputs = config.getAsJsonArray("outputs");
+        }
+        if (config.has("pins") && config.get("pins").isJsonArray()) {
+            rec.pins = config.getAsJsonArray("pins");
+        }
+        if (config.has("opticalDistricts") && config.get("opticalDistricts").isJsonArray()) {
+            rec.opticalDistricts = config.getAsJsonArray("opticalDistricts");
+        }
+        nodeInventory.upsert(rec);
+        if (rec.outputs != null) {
+            nodeOutputMirror.syncConfig(session.getPrefix(), rec.outputs);
+        } else {
+            nodeOutputMirror.syncConfig(session.getPrefix(), new JsonArray());
+        }
+        JsonObject out = new JsonObject();
+        out.addProperty("ok", true);
+        return out;
+    }
+
+    public JsonObject sendNodeTest(String id, String command) {
+        NodeSession session = findNodeSession(id);
+        if (session == null) {
+            throw new IllegalArgumentException("Node not found: " + id);
+        }
+        String line = command == null ? "" : command.trim();
+        if (!line.toUpperCase().startsWith("TEST")) {
+            line = "TEST " + line;
+        }
+        JsonObject out = new JsonObject();
+        out.addProperty("ok", true);
+        out.addProperty("sent", line);
+        if (line.toUpperCase(java.util.Locale.ROOT).startsWith("TEST SAMPLE")) {
+            String reply = session.sendCommandAwaitReply(line, "SAMPLE", 600L);
+            if (reply != null) {
+                out.addProperty("reply", reply);
+                parseSampleReply(reply, out);
+            }
+            return out;
+        }
+        session.sendCommand(line);
+        nodeOutputMirror.onCommandLine(session.getPrefix(), line);
+        return out;
+    }
+
+    /** Parse {@code SAMPLE A15=812 A0=1020 delta=208 pct=25} into JSON fields. */
+    public static void parseSampleReply(String reply, JsonObject out) {
+        if (reply == null || reply.isBlank()) {
+            return;
+        }
+        String[] toks = reply.trim().split("\\s+");
+        for (String tok : toks) {
+            if (tok.equalsIgnoreCase("SAMPLE")) {
+                continue;
+            }
+            int eq = tok.indexOf('=');
+            if (eq <= 0) {
+                continue;
+            }
+            String key = tok.substring(0, eq);
+            String val = tok.substring(eq + 1);
+            if ("delta".equalsIgnoreCase(key) || "pct".equalsIgnoreCase(key)) {
+                try {
+                    out.addProperty(key.toLowerCase(java.util.Locale.ROOT), Integer.parseInt(val));
+                } catch (NumberFormatException ignored) {
+                    out.addProperty(key.toLowerCase(java.util.Locale.ROOT), val);
+                }
+            } else {
+                try {
+                    out.addProperty(key.toUpperCase(java.util.Locale.ROOT), Integer.parseInt(val));
+                } catch (NumberFormatException ignored) {
+                    out.addProperty(key.toUpperCase(java.util.Locale.ROOT), val);
+                }
+            }
+        }
+    }
+
+    /**
+     * DCC-like fan-out: every connected node receives the accessory command line.
+     */
+    public void broadcastAccessoryToNodes(int address, boolean closed) {
+        String state = closed ? "ON" : "OFF";
+        String line = address + " " + state;
+        // closed/Forward → ON; thrown/Reverse → OFF — mirror UI state for all boards
+        nodeOutputMirror.onAccessory(address, closed);
+        for (NodeSession session : allNodeSessions()) {
+            try {
+                session.sendCommand(line);
+            } catch (Exception e) {
+                System.err.println("Node broadcast failed on " + session.getId() + ": " + e.getMessage());
+            }
+        }
+    }
+
+    public void broadcastAccessoryOptionToNodes(int address, String optionValue) {
+        String line = address + " " + (optionValue != null ? optionValue : "ON");
+        ParsedWire wire = parseWireToken(optionValue);
+        if (wire != null) {
+            nodeOutputMirror.onAccessory(address, wire.on);
+        }
+        for (NodeSession session : allNodeSessions()) {
+            try {
+                session.sendCommand(line);
+            } catch (Exception e) {
+                System.err.println("Node broadcast failed on " + session.getId() + ": " + e.getMessage());
+            }
+        }
+    }
+
+    private static ParsedWire parseWireToken(String optionValue) {
+        if (optionValue == null) {
+            return new ParsedWire(true);
+        }
+        String t = optionValue.trim().toUpperCase();
+        if ("ON".equals(t) || "CLOSED".equals(t) || "FORWARD".equals(t)) {
+            return new ParsedWire(true);
+        }
+        if ("OFF".equals(t) || "THROWN".equals(t) || "REVERSE".equals(t)) {
+            return new ParsedWire(false);
+        }
+        return null;
+    }
+
+    private static final class ParsedWire {
+        final boolean on;
+
+        ParsedWire(boolean on) {
+            this.on = on;
+        }
+    }
+
+    private List<NodeSession> allNodeSessions() {
+        List<NodeSession> list = new ArrayList<>();
+        list.addAll(sensorSessions.values());
+        list.addAll(shimSessions.values());
+        return list;
+    }
+
+    private NodeSession findNodeSession(String id) {
+        if (id == null) {
+            return null;
+        }
+        SensorBoardSession usb = sensorSessions.get(id);
+        if (usb != null) {
+            return usb;
+        }
+        return shimSessions.get(id);
+    }
+
+    public JsonObject bluetoothStatus() {
+        return BluetoothNodeSupport.statusJson();
+    }
+
+    public JsonArray bluetoothScan(long timeoutSec) {
+        return BluetoothNodeSupport.scanDevices(timeoutSec);
+    }
+
+    public JsonObject bluetoothPair(String address, String prefix) {
+        return BluetoothNodeSupport.pairAndBind(address, prefix);
+    }
+
+    public void restoreShimBoardsFromInventory() {
+        for (NodeInventory.NodeRecord rec : nodeInventory.list()) {
+            if (!SensorBoardSupport.TRANSPORT_SHIM.equalsIgnoreCase(rec.transport)) {
+                continue;
+            }
+            if (shimSessions.containsKey(rec.id)) {
+                continue;
+            }
+            try {
+                VirtualNodeSession session = new VirtualNodeSession(rec.prefix, rec.boardType, () -> sensorHardwarePublisher);
+                session.start();
+                if (rec.config != null) {
+                    session.sendCommand("CFG " + rec.config);
+                }
+                shimSessions.put(session.getId(), session);
+            } catch (Exception e) {
+                System.err.println("Failed to restore shim " + rec.id + ": " + e.getMessage());
+            }
+        }
+    }
+
     @Override
     public void close() {
         deviceMonitor.shutdown();
@@ -1033,6 +1501,13 @@ public final class DccIoServiceImpl implements DccIoService {
             }
         }
         sensorSessions.clear();
+        for (VirtualNodeSession shim : shimSessions.values()) {
+            try {
+                shim.close();
+            } catch (Exception ignore) {
+            }
+        }
+        shimSessions.clear();
         releasedSensorPorts.clear();
         sensorFlasher.shutdown();
 

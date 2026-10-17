@@ -852,7 +852,8 @@ final class DccIoHttpServer {
                 }
                 String port = req.get("port").getAsString();
                 String prefix = req.get("prefix").getAsString();
-                boolean started = service.flashSensorBoard(port, prefix);
+                String boardType = req.has("boardType") ? req.get("boardType").getAsString() : "nano-avr";
+                boolean started = service.flashSensorBoard(port, prefix, boardType);
                 if (!started) {
                     JsonObject err = new JsonObject();
                     err.addProperty("error", "Flash could not start (busy or invalid prefix)");
@@ -864,6 +865,72 @@ final class DccIoHttpServer {
                 ok.addProperty("ok", true);
                 ok.add("status", service.getSensorFlasher().statusJson());
                 sendJsonRaw(exchange, 202, gson.toJson(ok));
+                return;
+            }
+
+            if ("/api/sensors/shim".equals(path) || "/api/sensors/shim/".equals(path)) {
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                JsonObject req = body.isEmpty() ? new JsonObject() : gson.fromJson(body, JsonObject.class);
+                String prefix = req != null && req.has("prefix") ? req.get("prefix").getAsString() : null;
+                String boardType = req != null && req.has("boardType") ? req.get("boardType").getAsString() : "nano-avr";
+                try {
+                    sendJsonRaw(exchange, 200, gson.toJson(service.createShimBoard(prefix, boardType)));
+                } catch (IllegalArgumentException e) {
+                    sendJsonError(exchange, 400, e.getMessage());
+                }
+                return;
+            }
+
+            if ("/api/sensors/profiles".equals(path) || "/api/sensors/profiles/".equals(path)) {
+                if (!"GET".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                JsonObject root = new JsonObject();
+                root.add("profiles", service.listSensorsJson().getAsJsonArray("boardProfiles"));
+                root.add("outputTypes", service.listSensorsJson().getAsJsonArray("outputTypes"));
+                sendJsonRaw(exchange, 200, gson.toJson(root));
+                return;
+            }
+
+            if ("/api/sensors/bluetooth".equals(path) || "/api/sensors/bluetooth/".equals(path)) {
+                if (!"GET".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                sendJsonRaw(exchange, 200, gson.toJson(service.bluetoothStatus()));
+                return;
+            }
+
+            if ("/api/sensors/bluetooth/scan".equals(path) || "/api/sensors/bluetooth/scan/".equals(path)) {
+                if (!"POST".equalsIgnoreCase(method) && !"GET".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                JsonObject root = new JsonObject();
+                root.add("devices", service.bluetoothScan(8));
+                sendJsonRaw(exchange, 200, gson.toJson(root));
+                return;
+            }
+
+            if ("/api/sensors/bluetooth/pair".equals(path) || "/api/sensors/bluetooth/pair/".equals(path)) {
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                JsonObject req = body.isEmpty() ? new JsonObject() : gson.fromJson(body, JsonObject.class);
+                if (req == null || !req.has("address")) {
+                    sendJson(exchange, 400, "{\"error\":\"address required\"}");
+                    return;
+                }
+                String address = req.get("address").getAsString();
+                String prefix = req.has("prefix") ? req.get("prefix").getAsString() : "A";
+                sendJsonRaw(exchange, 200, gson.toJson(service.bluetoothPair(address, prefix)));
                 return;
             }
 
@@ -926,6 +993,69 @@ final class DccIoHttpServer {
                         } catch (IOException e) {
                             sendJsonError(exchange, 500, e.getMessage());
                         }
+                        return;
+                    }
+                    if ("simulate".equals(action)) {
+                        if (!"POST".equalsIgnoreCase(method)) {
+                            sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                            return;
+                        }
+                        String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                        JsonObject req = body.isEmpty() ? new JsonObject() : gson.fromJson(body, JsonObject.class);
+                        String hardwareId = req != null && req.has("hardwareId") ? req.get("hardwareId").getAsString() : null;
+                        String label = req != null && req.has("label") ? req.get("label").getAsString() : null;
+                        int state = req != null && req.has("state") && req.get("state").getAsInt() == 1 ? 1 : 0;
+                        try {
+                            sendJsonRaw(exchange, 200, gson.toJson(service.simulateShimChannel(id, hardwareId, label, state)));
+                        } catch (IllegalArgumentException e) {
+                            sendJsonError(exchange, 404, e.getMessage());
+                        }
+                        return;
+                    }
+                    if ("config".equals(action)) {
+                        if (!"POST".equalsIgnoreCase(method)) {
+                            sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                            return;
+                        }
+                        String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                        JsonObject req = body.isEmpty() ? new JsonObject() : gson.fromJson(body, JsonObject.class);
+                        if (req == null) {
+                            sendJson(exchange, 400, "{\"error\":\"config body required\"}");
+                            return;
+                        }
+                        try {
+                            sendJsonRaw(exchange, 200, gson.toJson(service.pushNodeConfig(id, req)));
+                        } catch (IllegalArgumentException e) {
+                            sendJsonError(exchange, 404, e.getMessage());
+                        }
+                        return;
+                    }
+                    if ("test".equals(action)) {
+                        if (!"POST".equalsIgnoreCase(method)) {
+                            sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                            return;
+                        }
+                        String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                        JsonObject req = body.isEmpty() ? new JsonObject() : gson.fromJson(body, JsonObject.class);
+                        String command = req != null && req.has("command") ? req.get("command").getAsString() : "";
+                        try {
+                            sendJsonRaw(exchange, 200, gson.toJson(service.sendNodeTest(id, command)));
+                        } catch (IllegalArgumentException e) {
+                            sendJsonError(exchange, 404, e.getMessage());
+                        }
+                        return;
+                    }
+                    if ("remove".equals(action)) {
+                        if (!"POST".equalsIgnoreCase(method) && !"DELETE".equalsIgnoreCase(method)) {
+                            sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                            return;
+                        }
+                        boolean ok = service.removeShimBoard(id);
+                        if (!ok) {
+                            sendJsonError(exchange, 404, "Shim board not found: " + id);
+                            return;
+                        }
+                        sendJson(exchange, 200, "{\"ok\":true}");
                         return;
                     }
                 }

@@ -11,45 +11,247 @@
 
     <nav class="page-nav" aria-label="Configuration sections">
         <a href="#dcc" class="page-link" data-page-link="dcc">DCC Configuration</a>
-        <a href="#sensors" class="page-link" data-page-link="sensors">Sensors</a>
+        <a href="#sensors" class="page-link" data-page-link="sensors">Nodes</a>
         <a href="#wifi" class="page-link" data-page-link="wifi">WiFi</a>
         <a href="#updates" class="page-link" data-page-link="updates">Updates</a>
     </nav>
 
     <section id="page-sensors" class="page-section" data-page="sensors">
         <div class="sensors-section">
-            <h2>Sensor boards</h2>
-            <p class="wifi-hint">USB PanelsDCC Sensor Boards are auto-detected. Flash sets the board prefix (A, B, AA, …).</p>
+            <div class="nodes-screen-bar">
+                <h2 id="nodesScreenTitle">Nodes</h2>
+                <div class="nodes-screen-actions" id="nodesScreenActions"></div>
+            </div>
+            <p class="wifi-hint" id="nodesScreenHint">Your boards and live sensors. Open Configure for pin layout and outputs.</p>
 
-            <div class="sensors-toolchain" id="sensorsToolchain">
-                <p class="update-line"><span class="label">Toolchain:</span> <span id="sensorsToolchainStatus">Checking…</span></p>
+            <!-- VIEW (default) -->
+            <div id="nodesView" class="nodes-screen is-active" data-nodes-screen="view">
+                <div class="sensors-toolchain" id="sensorsToolchain">
+                    <p class="update-line"><span class="label">Toolchain:</span> <span id="sensorsToolchainStatus">Checking…</span></p>
+                </div>
+                <div id="sensorsCandidateStrip" class="nodes-candidate-strip" hidden></div>
+                <div id="sensorsBoardList" class="sensors-board-list"></div>
+                <div id="sensorsTransportStubs" class="sensors-transport-stubs nodes-muted-block"></div>
             </div>
 
-            <h3>Active boards</h3>
-            <p class="wifi-hint">Each board shows optical (A0–A6) and digital (D2–D12) inputs. Lit = DETECTED.</p>
-            <div id="sensorsBoardList" class="sensors-board-list"></div>
+            <!-- ADD workflow -->
+            <div id="nodesAdd" class="nodes-screen" data-nodes-screen="add" hidden>
+                <ol class="nodes-steps" id="nodesAddSteps" aria-label="Add node steps">
+                    <li data-step="method" class="is-current">Method</li>
+                    <li data-step="details">Details</li>
+                    <li data-step="action">Create</li>
+                    <li data-step="done">Configure</li>
+                </ol>
 
-            <h3>USB candidates</h3>
-            <p class="wifi-hint">CH340 ports waiting for a serial probe. Auto-probe runs in the background; use <strong>Probe</strong> if a board did not appear after reboot.</p>
-            <div id="sensorsCandidateList" class="sensors-board-list"></div>
+                <div class="nodes-add-panel" data-add-step="method">
+                    <h3>How are you adding a node?</h3>
+                    <div class="nodes-method-grid">
+                        <button type="button" class="nodes-method-card" data-add-method="usb">
+                            <strong>Flash USB board</strong>
+                            <span>Nano / Mega over USB serial</span>
+                        </button>
+                        <button type="button" class="nodes-method-card" data-add-method="virtual">
+                            <strong>Virtual board</strong>
+                            <span>Try the UI with no hardware</span>
+                        </button>
+                        <button type="button" class="nodes-method-card" data-add-method="bluetooth">
+                            <strong>Bluetooth (ESP32)</strong>
+                            <span>Scan and pair PanelsDCC-*</span>
+                        </button>
+                        <button type="button" class="nodes-method-card" data-add-method="probe">
+                            <strong>Probe USB candidate</strong>
+                            <span>Board already flashed — discover it</span>
+                        </button>
+                    </div>
+                </div>
 
-            <h3>Flash USB board</h3>
-            <div class="sensors-flash-form">
-                <div class="form-group">
-                    <label>Port:</label>
-                    <select id="sensorFlashPort"></select>
+                <div class="nodes-add-panel" data-add-step="details" hidden>
+                    <h3 id="nodesAddDetailsTitle">Details</h3>
+                    <div id="nodesAddDetailsBody"></div>
+                    <div class="nodes-inline-actions">
+                        <button type="button" class="btn btn-secondary" id="btnNodesAddBack">Back</button>
+                        <button type="button" class="btn btn-primary" id="btnNodesAddNext">Continue</button>
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label>Board prefix (A–Z or AA–ZZ):</label>
-                    <input type="text" id="sensorFlashPrefix" maxlength="2" placeholder="A" style="text-transform:uppercase;">
-                    <p class="wifi-hint" id="sensorFlashChannels">Channels: —</p>
+
+                <div class="nodes-add-panel" data-add-step="action" hidden>
+                    <h3 id="nodesAddActionTitle">Working…</h3>
+                    <pre id="sensorFlashLog" class="sensors-flash-log"></pre>
+                    <div class="nodes-inline-actions">
+                        <button type="button" class="btn btn-secondary" id="btnNodesAddCancel">Cancel</button>
+                        <button type="button" class="btn btn-primary" id="btnNodesAddRun">Start</button>
+                    </div>
                 </div>
-                <button type="button" id="btnSensorFlash" class="btn btn-primary">Flash board</button>
-                <pre id="sensorFlashLog" class="sensors-flash-log"></pre>
             </div>
 
-            <h3>Other transports</h3>
-            <div id="sensorsTransportStubs" class="sensors-transport-stubs"></div>
+            <!-- DCC AUDIT -->
+            <div id="nodesAudit" class="nodes-screen" data-nodes-screen="audit" hidden>
+                <div class="nodes-audit-toolbar">
+                    <input type="search" id="nodesAuditSearch" placeholder="Search DCC, board, function…" autocomplete="off">
+                    <p class="nodes-audit-summary" id="nodesAuditSummary"></p>
+                </div>
+                <div class="nodes-audit-legend">
+                    <span class="nodes-audit-leg is-shared">Shared address</span>
+                    <span class="nodes-audit-leg is-clash">Same DCC + direction on multiple functions</span>
+                </div>
+                <div class="nodes-audit-table-wrap">
+                    <table class="nodes-audit-table">
+                        <thead>
+                            <tr>
+                                <th>DCC</th>
+                                <th>Board</th>
+                                <th>Function</th>
+                                <th>Type</th>
+                                <th>Config</th>
+                                <th>Direction</th>
+                                <th>Pins</th>
+                            </tr>
+                        </thead>
+                        <tbody id="nodesAuditTableBody"></tbody>
+                    </table>
+                    <p class="wifi-hint" id="nodesAuditEmpty" hidden>No DCC addresses configured on any node yet.</p>
+                </div>
+            </div>
+
+            <!-- CONFIGURE -->
+            <div id="nodesConfigure" class="nodes-screen" data-nodes-screen="configure" hidden>
+                <div class="nodes-config-meta" id="nodesConfigMeta"></div>
+                <div class="nodes-config-layout">
+                    <div class="nodes-pick-pane">
+                        <h3>Add</h3>
+                        <div id="nodesTypePicker" class="nodes-type-picker"></div>
+                    </div>
+                    <div class="nodes-board-pane">
+                        <div id="nodesBoardDiagram" class="nodes-board-diagram" aria-label="Board pin diagram"></div>
+                        <div class="nodes-board-legend">
+                            <span class="leg free">Free</span>
+                            <span class="leg optical">Analogue</span>
+                            <span class="leg din">Digital in</span>
+                            <span class="leg virt">Virtual</span>
+                            <span class="leg out">Output</span>
+                            <span class="leg sel">Selected</span>
+                            <span class="leg locked">Unavailable</span>
+                        </div>
+                        <p class="nodes-mirror-note">Output indicators are mirrored from DCC (not live board readback).</p>
+                    </div>
+                    <aside class="nodes-config-aside">
+                        <h3>Assigned functions</h3>
+                        <div id="nodesOutputList" class="nodes-output-list"></div>
+                        <h3>Sensor districts</h3>
+                        <div id="nodesDistrictList" class="nodes-output-list"></div>
+                        <div id="nodesSimPanel" class="nodes-sim-panel" hidden>
+                            <h3>Simulate inputs</h3>
+                            <div id="nodesSimButtons" class="nodes-sim-buttons"></div>
+                        </div>
+                        <div class="nodes-inline-actions">
+                            <button type="button" class="btn btn-secondary" id="btnNodesConfigDone">Done</button>
+                        </div>
+                    </aside>
+                </div>
+            </div>
+
+            <!-- Hidden selects kept for shared helpers / port lists -->
+            <select id="sensorFlashPort" hidden></select>
+            <select id="sensorFlashBoardType" hidden></select>
+            <select id="shimBoardType" hidden></select>
+            <input type="hidden" id="sensorFlashPrefix" value="">
+            <input type="hidden" id="shimBoardPrefix" value="">
+            <span id="sensorFlashChannels" hidden></span>
+            <div id="sensorsBluetoothPanel" hidden></div>
+            <div id="sensorsCandidateList" hidden></div>
+        </div>
+
+        <!-- Configure function modal -->
+        <div id="nodesConfigModal" class="nodes-modal" hidden>
+            <div class="nodes-modal-backdrop" data-modal-close></div>
+            <div class="nodes-modal-card" role="dialog" aria-modal="true" aria-labelledby="nodesModalTitle">
+                <header class="nodes-modal-header">
+                    <div>
+                        <h3 id="nodesModalTitle">Configure output</h3>
+                        <p class="nodes-modal-pins" id="nodesModalPins"></p>
+                    </div>
+                    <button type="button" class="nodes-modal-x" data-modal-close aria-label="Close">&times;</button>
+                </header>
+                <div class="nodes-modal-body">
+                    <section class="nodes-modal-section">
+                        <div class="nodes-modal-grid">
+                            <div class="form-group">
+                                <label for="nodeOutputName">Name</label>
+                                <input type="text" id="nodeOutputName" maxlength="48" placeholder="e.g. Station crossing">
+                            </div>
+                            <div class="form-group">
+                                <label>Function</label>
+                                <div class="nodes-function-type" id="nodeOutputTypeLabel">—</div>
+                                <input type="hidden" id="nodeOutputType" value="">
+                            </div>
+                        </div>
+                    </section>
+                    <section class="nodes-modal-section" id="nodeParamsSection">
+                        <div class="form-group nodes-params-grid" id="nodeOutputParams"></div>
+                    </section>
+                    <section class="nodes-modal-section">
+                        <div id="nodeOutputTriggers" class="nodes-triggers"></div>
+                        <button type="button" class="btn btn-secondary nodes-add-trigger" id="btnNodeAddTrigger" hidden>Add position</button>
+                    </section>
+                </div>
+                <footer class="nodes-modal-footer">
+                    <button type="button" class="btn btn-danger" id="btnNodeDeleteOutput">Delete</button>
+                    <span class="nodes-modal-spacer"></span>
+                    <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+                    <button type="button" class="btn btn-primary" id="btnNodeSaveOutput">Save</button>
+                </footer>
+            </div>
+        </div>
+
+        <!-- Configure optical district modal -->
+        <div id="nodesDistrictModal" class="nodes-modal" hidden>
+            <div class="nodes-modal-backdrop" data-district-modal-close></div>
+            <div class="nodes-modal-card" role="dialog" aria-modal="true" aria-labelledby="nodesDistrictModalTitle">
+                <header class="nodes-modal-header">
+                    <div>
+                        <h3 id="nodesDistrictModalTitle">Configure district</h3>
+                        <p class="nodes-modal-pins" id="nodesDistrictModalPins"></p>
+                    </div>
+                    <button type="button" class="nodes-modal-x" data-district-modal-close aria-label="Close">&times;</button>
+                </header>
+                <div class="nodes-modal-body">
+                    <section class="nodes-modal-section">
+                        <div class="nodes-modal-grid">
+                            <div class="form-group">
+                                <label for="nodeDistrictName">Name</label>
+                                <input type="text" id="nodeDistrictName" maxlength="48" placeholder="e.g. Yard">
+                            </div>
+                            <div class="form-group">
+                                <label>Type</label>
+                                <div class="nodes-function-type">Optical district</div>
+                            </div>
+                        </div>
+                    </section>
+                    <section class="nodes-modal-section">
+                        <div class="form-group">
+                            <label>Pins</label>
+                            <p class="nodes-modal-pins" id="nodesDistrictPinSummary" style="margin:0"></p>
+                            <div class="nodes-inline-actions" style="margin-top:8px">
+                                <button type="button" class="btn btn-secondary btn-small" id="btnDistrictPickRef">Pick reference</button>
+                                <button type="button" class="btn btn-secondary btn-small" id="btnDistrictPickSensors">Pick sensors</button>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="nodeDistrictPct">Sensitivity (%) — how much brighter than the reference before DETECTED</label>
+                            <input type="number" id="nodeDistrictPct" min="1" max="100" value="15">
+                        </div>
+                        <div class="nodes-district-cal" id="nodesDistrictCalPanel">
+                            <button type="button" class="btn btn-secondary btn-small" id="btnDistrictCalStart">Calibrate…</button>
+                        </div>
+                    </section>
+                </div>
+                <footer class="nodes-modal-footer">
+                    <button type="button" class="btn btn-danger" id="btnNodeDeleteDistrict">Delete</button>
+                    <span class="nodes-modal-spacer"></span>
+                    <button type="button" class="btn btn-secondary" data-district-modal-close>Cancel</button>
+                    <button type="button" class="btn btn-primary" id="btnNodeSaveDistrict">Save</button>
+                </footer>
+            </div>
         </div>
     </section>
 

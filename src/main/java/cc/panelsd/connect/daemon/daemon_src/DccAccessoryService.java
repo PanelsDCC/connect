@@ -8,6 +8,7 @@ import java.io.IOException;
 
 /**
  * Adapter exposing accessory operations from DccIoServiceImpl to JSON handlers.
+ * DCC track command (when a CS is connected) plus fan-out to all node boards.
  */
 public class DccAccessoryService implements JsonAccessoriesHandler.AccessoryService {
 
@@ -19,18 +20,21 @@ public class DccAccessoryService implements JsonAccessoriesHandler.AccessoryServ
 
     @Override
     public void setTurnout(int address, boolean closed) throws IOException {
+        boolean sentToCommandStation = false;
         CommandStationConnection conn = service.getAccessoryController();
-        if (conn == null) {
-            throw new IllegalStateException("No accessory controller available");
+        if (conn != null && conn.isConnected()) {
+            AccessoryController controller = conn.getAccessoryController();
+            if (controller != null) {
+                controller.setTurnout(address, closed);
+                sentToCommandStation = true;
+            }
         }
-        if (!conn.isConnected()) {
-            throw new IllegalStateException("Accessory controller not connected");
+        // DCC-like: every node hears the address; boards filter locally via CFG
+        service.broadcastAccessoryToNodes(address, closed);
+        if (!sentToCommandStation) {
+            // Node-only layouts are valid — no CS required when boards are present
+            System.out.println("[accessories] No CS; broadcast " + address + " "
+                    + (closed ? "ON" : "OFF") + " to nodes only");
         }
-        AccessoryController controller = conn.getAccessoryController();
-        if (controller == null) {
-            throw new IllegalStateException("Accessory controller not available");
-        }
-        controller.setTurnout(address, closed);
     }
 }
-

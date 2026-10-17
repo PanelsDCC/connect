@@ -8,7 +8,10 @@ import com.google.gson.JsonObject;
 import java.io.IOException;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
@@ -18,7 +21,7 @@ import java.util.regex.Pattern;
  * Holds an open PanelsDCC Sensor Board serial session @ 9600 and publishes raw
  * occupancy edges as gateway {@code sensorHardware} patches for Control to process.
  */
-public final class SensorBoardSession implements AutoCloseable {
+public final class SensorBoardSession implements NodeSession {
 
     private static final Pattern OCCUPANCY =
             Pattern.compile("^(\\S+):\\s*(DETECTED|CLEAR)\\s*$", Pattern.CASE_INSENSITIVE);
@@ -26,19 +29,30 @@ public final class SensorBoardSession implements AutoCloseable {
     private final String portName;
     private final String prefix;
     private final String byPath;
+    private final String boardType;
     private final SerialPortOpsFactory portFactory;
     private final Supplier<Consumer<JsonObject>> publisherSupplier;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private volatile SerialPortOps port;
     private Thread readerThread;
+    private final AtomicReference<CompletableFuture<String>> sampleWaiter = new AtomicReference<>();
 
     public SensorBoardSession(
             String portName,
             String prefix,
             String byPath,
             Supplier<Consumer<JsonObject>> publisherSupplier) {
-        this(portName, prefix, byPath, UsbSerialProbe.JSerialCommPortOps::new, publisherSupplier);
+        this(portName, prefix, byPath, BoardProfile.NANO_AVR, UsbSerialProbe.JSerialCommPortOps::new, publisherSupplier);
+    }
+
+    public SensorBoardSession(
+            String portName,
+            String prefix,
+            String byPath,
+            String boardType,
+            Supplier<Consumer<JsonObject>> publisherSupplier) {
+        this(portName, prefix, byPath, boardType, UsbSerialProbe.JSerialCommPortOps::new, publisherSupplier);
     }
 
     public SensorBoardSession(
@@ -47,27 +61,77 @@ public final class SensorBoardSession implements AutoCloseable {
             String byPath,
             SerialPortOpsFactory portFactory,
             Supplier<Consumer<JsonObject>> publisherSupplier) {
+        this(portName, prefix, byPath, BoardProfile.NANO_AVR, portFactory, publisherSupplier);
+    }
+
+    public SensorBoardSession(
+            String portName,
+            String prefix,
+            String byPath,
+            String boardType,
+            SerialPortOpsFactory portFactory,
+            Supplier<Consumer<JsonObject>> publisherSupplier) {
         this.portName = Objects.requireNonNull(portName, "portName");
         this.prefix = prefix;
         this.byPath = byPath;
+        this.boardType = BoardProfile.normalize(boardType);
         this.portFactory = Objects.requireNonNull(portFactory, "portFactory");
         this.publisherSupplier = Objects.requireNonNull(publisherSupplier, "publisherSupplier");
+    }
+
+    @Override
+    public String getId() {
+        return SensorBoardSupport.sessionIdForPort(portName);
     }
 
     public String getPortName() {
         return portName;
     }
 
+    @Override
     public String getPrefix() {
         return prefix;
+    }
+
+    @Override
+    public String getBoardType() {
+        return boardType;
+    }
+
+    @Override
+    public String getTransport() {
+        return SensorBoardSupport.TRANSPORT_USB;
+    }
+
+    @Override
+    public String getEndpoint() {
+        return SensorBoardSupport.barePort(portName);
     }
 
     public String getByPath() {
         return byPath;
     }
 
+    @Override
     public boolean isRunning() {
         return running.get();
+    }
+
+    @Override
+    public void sendCommand(String line) {
+        if (line == null || line.isBlank()) {
+            return;
+        }
+        SerialPortOps p = port;
+        if (p == null || !running.get()) {
+            return;
+        }
+        try {
+            byte[] data = (line.endsWith("\n") ? line : line + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            p.write(data);
+        } catch (Exception e) {
+            System.err.println("Failed to send to sensor board " + portName + ": " + e.getMessage());
+        }
     }
 
     public void start() throws IOException {
@@ -120,9 +184,36 @@ public final class SensorBoardSession implements AutoCloseable {
     }
 
     void handleLine(String line) {
+        if (line != null) {
+            String t = line.trim();
+            if (t.regionMatches(true, 0, "SAMPLE", 0, 6)) {
+                CompletableFuture<String> waiter = sampleWaiter.getAndSet(null);
+                if (waiter != null) {
+                    waiter.complete(t);
+                }
+                return;
+            }
+        }
         Optional<SensorEdge> edge = parseOccupancyLine(line);
         if (edge.isPresent()) {
             publish(edge.get());
+        }
+    }
+
+    @Override
+    public String sendCommandAwaitReply(String line, String replyPrefix, long timeoutMs) {
+        if (replyPrefix == null || !replyPrefix.equalsIgnoreCase("SAMPLE")) {
+            sendCommand(line);
+            return null;
+        }
+        CompletableFuture<String> future = new CompletableFuture<>();
+        sampleWaiter.set(future);
+        sendCommand(line);
+        try {
+            return future.get(Math.max(50L, timeoutMs), TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            sampleWaiter.compareAndSet(future, null);
+            return null;
         }
     }
 

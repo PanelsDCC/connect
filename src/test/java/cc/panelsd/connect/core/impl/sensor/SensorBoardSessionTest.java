@@ -13,16 +13,22 @@ class SensorBoardSessionTest {
     @Test
     void parseDetectedAndClear() {
         Optional<SensorBoardSession.SensorEdge> detected =
-                SensorBoardSession.parseOccupancyLine("A3: DETECTED");
+                SensorBoardSession.parseOccupancyLine("A-A3: DETECTED");
         assertTrue(detected.isPresent());
-        assertEquals("A3", detected.get().hardwareId);
+        assertEquals("A-A3", detected.get().hardwareId);
         assertEquals(1, detected.get().state);
 
         Optional<SensorBoardSession.SensorEdge> clear =
-                SensorBoardSession.parseOccupancyLine("AB0: CLEAR");
+                SensorBoardSession.parseOccupancyLine("AB-A0: CLEAR");
         assertTrue(clear.isPresent());
-        assertEquals("AB0", clear.get().hardwareId);
+        assertEquals("AB-A0", clear.get().hardwareId);
         assertEquals(0, clear.get().state);
+
+        Optional<SensorBoardSession.SensorEdge> digital =
+                SensorBoardSession.parseOccupancyLine("ZZ-D12: DETECTED");
+        assertTrue(digital.isPresent());
+        assertEquals("ZZ-D12", digital.get().hardwareId);
+        assertEquals(1, digital.get().state);
     }
 
     @Test

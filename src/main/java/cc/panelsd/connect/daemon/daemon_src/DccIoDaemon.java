@@ -155,6 +155,7 @@ public final class DccIoDaemon {
         // boards can publish sensorHardware patches immediately.
         System.out.println("Starting device monitoring...");
         service.startDeviceMonitoring();
+        service.restoreShimBoardsFromInventory();
         
         // Subscribe to throttle events from the controller to broadcast via WebSocket
         DccThrottleService throttleService = new DccThrottleService(service);

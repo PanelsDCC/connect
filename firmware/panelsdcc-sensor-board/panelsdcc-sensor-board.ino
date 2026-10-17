@@ -1,130 +1,71 @@
 /*
- * PanelsDCC Sensor Board — optical + digital inputs
+ * PanelsDCC Node — Arduino Nano (AVR)
  *
- * BOARD_PREFIX is chosen by the person flashing this Nano:
- *   "A", "B", ... "Z", "AA", "AB", "AC", ...
+ * Default sensors: optical A0–A6 (A7 = ambient ref), digital D2–D12.
+ * Outputs share the same pin budget — assign via CFG (may displace inputs).
  *
- * Hardware IDs:
- *   Optical (A0..A6):  {BOARD_PREFIX}{pinIndex}     e.g. A0, A3, AA1
- *   Digital (D2..D12): {BOARD_PREFIX}D{pinNumber}   e.g. AD2, BD7, AAD12
- *   A7 = ambient reference only (never reported)
- *   D0/D1 reserved for USB serial — not used as inputs
- *   D13 has the built-in LED — not usable as INPUT_PULLUP
- *
- * Digital pins use INPUT_PULLUP: LOW (to GND) = DETECTED, HIGH = CLEAR.
- *
- * Boot: "PanelsDCC Sensor Board {prefix} READY" then a full state snapshot.
+ * Shared runtime: NodeEngine (CFG / EEPROM / output engines).
  */
 
+#include "NodeEngine.h"
+
 const char* BOARD_PREFIX = "A";
+const char* BOARD_TYPE = "nano-avr";
 
-const int REF_PIN = A7;
-const int SENSOR_PINS[] = { A0, A1, A2, A3, A4, A5, A6 };
-const int SENSOR_COUNT = 7;
+const char* boardPrefix() { return BOARD_PREFIX; }
+const char* boardType() { return BOARD_TYPE; }
+Stream* boardLink() { return &Serial; }
 
-const int DIGITAL_PINS[] = { 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };
-const int DIGITAL_COUNT = 11;
-
-const int DELTA_THRESHOLD = 130;
-const unsigned long CLEAR_HOLD_MS = 1000;
-
-bool reportedActive[SENSOR_COUNT];
-unsigned long clearSinceMs[SENSOR_COUNT];
-
-bool digReportedActive[DIGITAL_COUNT];
-unsigned long digClearSinceMs[DIGITAL_COUNT];
-
-void printAnalogId(int channel) {
-  Serial.print(BOARD_PREFIX);
-  Serial.print(channel);
+int boardSilkToGpio(const char* silk) {
+  if (!silk || !silk[0]) return -1;
+  char c0 = silk[0];
+  if (c0 >= 'a' && c0 <= 'z') c0 -= 32;
+  int n = atoi(silk + 1);
+  if (c0 == 'A') {
+    if (n < 0 || n > 7) return -1;
+    return A0 + n;
+  }
+  if (c0 == 'D') {
+    if (n < 0 || n > 13) return -1;
+    return n;
+  }
+  return -1;
 }
 
-void printDigitalId(int pin) {
-  Serial.print(BOARD_PREFIX);
-  Serial.print('D');
-  Serial.print(pin);
-}
-
-void emitAnalog(int channel, bool active) {
-  printAnalogId(channel);
-  Serial.println(active ? ": DETECTED" : ": CLEAR");
-}
-
-void emitDigital(int pin, bool active) {
-  printDigitalId(pin);
-  Serial.println(active ? ": DETECTED" : ": CLEAR");
+void boardLoadDefaultPinRoles(NodePinRoleEntry* roles, uint8_t* count, int* refGpio) {
+  *count = 0;
+  *refGpio = A7;
+  for (int i = 0; i <= 6 && *count < NODE_MAX_PIN_ROLES; i++) {
+    NodePinRoleEntry* e = &roles[(*count)++];
+    e->label[0] = 'A';
+    e->label[1] = (char)('0' + i);
+    e->label[2] = '\0';
+    e->role = ROLE_OPTICAL;
+    e->gpio = A0 + i;
+  }
+  for (int d = 2; d <= 12 && *count < NODE_MAX_PIN_ROLES; d++) {
+    NodePinRoleEntry* e = &roles[(*count)++];
+    e->label[0] = 'D';
+    if (d < 10) {
+      e->label[1] = (char)('0' + d);
+      e->label[2] = '\0';
+    } else {
+      e->label[1] = '1';
+      e->label[2] = (char)('0' + (d - 10));
+      e->label[3] = '\0';
+    }
+    e->role = ROLE_DIGITAL_IN;
+    e->gpio = d;
+  }
 }
 
 void setup() {
   Serial.begin(9600);
   delay(500);
-
-  for (int i = 0; i < DIGITAL_COUNT; i++) {
-    pinMode(DIGITAL_PINS[i], INPUT_PULLUP);
-  }
-
-  Serial.print("PanelsDCC Sensor Board ");
-  Serial.print(BOARD_PREFIX);
-  Serial.println(" READY");
-
-  int ref = analogRead(REF_PIN);
-  unsigned long now = millis();
-  for (int i = 0; i < SENSOR_COUNT; i++) {
-    reportedActive[i] = (analogRead(SENSOR_PINS[i]) - ref) > DELTA_THRESHOLD;
-    clearSinceMs[i] = now;
-    emitAnalog(i, reportedActive[i]);
-  }
-  for (int i = 0; i < DIGITAL_COUNT; i++) {
-    // INPUT_PULLUP: LOW = active (to ground)
-    digReportedActive[i] = digitalRead(DIGITAL_PINS[i]) == LOW;
-    digClearSinceMs[i] = now;
-    emitDigital(DIGITAL_PINS[i], digReportedActive[i]);
-  }
+  nodeEngineBegin();
 }
 
 void loop() {
-  int ref = analogRead(REF_PIN);
-  unsigned long now = millis();
-
-  for (int i = 0; i < SENSOR_COUNT; i++) {
-    bool rawActive = (analogRead(SENSOR_PINS[i]) - ref) > DELTA_THRESHOLD;
-
-    if (rawActive) {
-      clearSinceMs[i] = 0;
-      if (!reportedActive[i]) {
-        emitAnalog(i, true);
-        reportedActive[i] = true;
-      }
-    } else if (reportedActive[i]) {
-      if (clearSinceMs[i] == 0) {
-        clearSinceMs[i] = now;
-      } else if (now - clearSinceMs[i] >= CLEAR_HOLD_MS) {
-        emitAnalog(i, false);
-        reportedActive[i] = false;
-        clearSinceMs[i] = 0;
-      }
-    }
-  }
-
-  for (int i = 0; i < DIGITAL_COUNT; i++) {
-    bool rawActive = digitalRead(DIGITAL_PINS[i]) == LOW;
-
-    if (rawActive) {
-      digClearSinceMs[i] = 0;
-      if (!digReportedActive[i]) {
-        emitDigital(DIGITAL_PINS[i], true);
-        digReportedActive[i] = true;
-      }
-    } else if (digReportedActive[i]) {
-      if (digClearSinceMs[i] == 0) {
-        digClearSinceMs[i] = now;
-      } else if (now - digClearSinceMs[i] >= CLEAR_HOLD_MS) {
-        emitDigital(DIGITAL_PINS[i], false);
-        digReportedActive[i] = false;
-        digClearSinceMs[i] = 0;
-      }
-    }
-  }
-
-  delay(50);
+  nodeEngineLoop();
+  delay(20);
 }

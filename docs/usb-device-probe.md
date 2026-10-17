@@ -73,13 +73,13 @@ Runtime baud **9600**.
 | Event | Line |
 |-------|------|
 | Boot / identify | `PanelsDCC Sensor Board {prefix} READY` |
-| Occupied | `{prefix}{n}: DETECTED` |
-| Clear | `{prefix}{n}: CLEAR` |
+| Occupied | `{prefix}-A{n}: DETECTED` / `{prefix}-D{n}: DETECTED` |
+| Clear | `{prefix}-A{n}: CLEAR` / `{prefix}-D{n}: CLEAR` |
 
 Connect publishes raw edges on the gateway WebSocket:
 
 ```json
-{ "type": "sensorHardware", "method": "patch", "data": { "id": "A3", "state": 1 } }
+{ "type": "sensorHardware", "method": "patch", "data": { "id": "A-A3", "state": 1 } }
 ```
 
 Control’s sensor-processor calls `applySensorState`, then broadcasts enriched `sensorStates` for browsers. HTTP `POST/PUT /sensors/:id` remains for scripts; Connect does not use it for board edges.

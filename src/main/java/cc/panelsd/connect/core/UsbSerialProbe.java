@@ -21,8 +21,9 @@ public final class UsbSerialProbe {
     public static final int SENSOR_BAUD = 9600;
     public static final int DCCPP_BAUD = 115200;
 
+    /** Legacy: {@code PanelsDCC Sensor Board A READY}; new: {@code PanelsDCC Node A nano-avr READY}. */
     private static final Pattern SENSOR_READY =
-            Pattern.compile("^PanelsDCC Sensor Board (\\S+) READY\\s*$");
+            Pattern.compile("^PanelsDCC (?:Sensor Board|Node) (\\S+)(?: (\\S+))? READY\\s*$");
     /** Nano boot after DTR can exceed 1.5s after host reboot / USB re-enum. */
     static final long SENSOR_BOOT_WAIT_MS = 4000L;
     private static final long SENSOR_RETRY_SETTLE_MS = 500L;
@@ -92,7 +93,8 @@ public final class UsbSerialProbe {
             for (String line : lines) {
                 Matcher m = SENSOR_READY.matcher(line.trim());
                 if (m.matches()) {
-                    return ProbeResult.sensorBoard(m.group(1));
+                    String boardType = m.groupCount() >= 2 ? m.group(2) : null;
+                    return ProbeResult.sensorBoard(m.group(1), boardType);
                 }
             }
             return ProbeResult.unknown();
@@ -159,6 +161,15 @@ public final class UsbSerialProbe {
         return m.matches() ? m.group(1) : null;
     }
 
+    /** Optional boardType from READY banner (null for legacy Sensor Board lines). */
+    public static String parseSensorReadyBoardType(String line) {
+        if (line == null) {
+            return null;
+        }
+        Matcher m = SENSOR_READY.matcher(line.trim());
+        return m.matches() ? m.group(2) : null;
+    }
+
     public enum DeviceType {
         SENSOR_BOARD,
         DCCPP,
@@ -169,17 +180,28 @@ public final class UsbSerialProbe {
         public final DeviceType type;
         /** Board prefix when {@link DeviceType#SENSOR_BOARD}, else null. */
         public final String prefix;
+        /** Board type id when present on READY banner (e.g. nano-avr). */
+        public final String boardType;
         /** True when the serial port could not be opened/read (retry sooner). */
         public final boolean portBusy;
 
         private ProbeResult(DeviceType type, String prefix, boolean portBusy) {
+            this(type, prefix, null, portBusy);
+        }
+
+        private ProbeResult(DeviceType type, String prefix, String boardType, boolean portBusy) {
             this.type = type;
             this.prefix = prefix;
+            this.boardType = boardType;
             this.portBusy = portBusy;
         }
 
         public static ProbeResult sensorBoard(String prefix) {
-            return new ProbeResult(DeviceType.SENSOR_BOARD, prefix, false);
+            return new ProbeResult(DeviceType.SENSOR_BOARD, prefix, null, false);
+        }
+
+        public static ProbeResult sensorBoard(String prefix, String boardType) {
+            return new ProbeResult(DeviceType.SENSOR_BOARD, prefix, boardType, false);
         }
 
         public static ProbeResult dccpp() {

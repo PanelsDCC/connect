@@ -85,12 +85,26 @@ fi
 info "Updating Arduino package index..."
 "$CLI_BIN" core update-index || error "core update-index failed"
 
-info "Installing arduino:avr core (Nano FQBN)..."
+info "Installing arduino:avr core (Nano + Mega FQBNs)..."
 "$CLI_BIN" core install arduino:avr || error "core install arduino:avr failed"
 
 info "Verifying arduino:avr:nano ..."
 "$CLI_BIN" board details -b arduino:avr:nano >/dev/null || \
     error "arduino:avr:nano not available after core install"
+
+info "Verifying arduino:avr:mega ..."
+"$CLI_BIN" board details -b arduino:avr:mega >/dev/null || \
+    error "arduino:avr:mega not available after core install"
+
+info "Installing esp32:esp32 core (ESP32 node boards)..."
+"$CLI_BIN" core update-index || warn "esp32 index update failed (retry later)"
+if "$CLI_BIN" core install esp32:esp32; then
+    info "Verifying esp32:esp32:esp32 ..."
+    "$CLI_BIN" board details -b esp32:esp32:esp32 >/dev/null || \
+        warn "esp32:esp32:esp32 not listed yet — flash ESP32 after core settles"
+else
+    warn "esp32:esp32 core install failed (network / board manager). AVR Nano/Mega still OK."
+fi
 
 if id -u dcc-io >/dev/null 2>&1; then
     chown -R dcc-io:dcc-io "$DATA_DIR"
@@ -99,5 +113,5 @@ fi
 info "Arduino toolchain ready:"
 info "  cli:  $CLI_BIN"
 info "  data: $DATA_DIR"
-info "  fqbn: arduino:avr:nano"
+info "  fqbn: arduino:avr:nano, arduino:avr:mega, esp32:esp32:esp32 (when installed)"
 exit 0

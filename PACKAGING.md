@@ -106,8 +106,10 @@ The Debian package installs:
 
 - `/usr/lib/panelsdcc-connect/` - Main JAR file
 - `/usr/local/bin/jmri-install` - JMRI installation script
-- `/usr/local/bin/panelsdcc-connect-arduino-install` - arduino-cli + `arduino:avr` (sensor flash); run from postinst (needs network)
-- `/usr/share/panelsdcc-connect/firmware/panelsdcc-sensor-board/` - bundled Nano sketch
+- `/usr/local/bin/panelsdcc-connect-arduino-install` - arduino-cli + `arduino:avr` + `esp32:esp32` (node flash); run from postinst (needs network)
+- `/usr/share/panelsdcc-connect/firmware/panelsdcc-sensor-board/` - Nano AVR sketch
+- `/usr/share/panelsdcc-connect/firmware/panelsdcc-sensor-board-mega/` - Mega AVR sketch
+- `/usr/share/panelsdcc-connect/firmware/panelsdcc-sensor-board-esp32/` - ESP32 sketch
 - `/var/lib/panelsdcc-connect/arduino/` - Arduino CLI data dir (created by arduino-install)
 - `/lib/systemd/system/panelsdcc-connect.service` - Systemd service file
 - `/var/lib/panelsdcc-connect/` - Working directory (created on install)

@@ -1,77 +1,68 @@
-# Connect Sensor Boards
+# Connect Nodes (sensor + accessory boards)
 
-USB **PanelsDCC Sensor Boards** (Nano + CH340) are managed from the Connect web UI
-under **Sensors** (`#sensors`).
+USB / Bluetooth / **virtual** PanelsDCC nodes are managed from the Connect web UI
+under **Nodes** (`#sensors`).
 
 ## What Connect does
 
-1. **Probe** CH340 ports (`1a86:7523`) — sensor banner @ 9600 vs DCC-EX @ 115200 (see [usb-device-probe.md](./usb-device-probe.md)).
-2. **Listen** on sensor ports @ 9600; publish `sensorHardware` patches for Control.
+1. **Probe** CH340 ports (`1a86:7523`) — node READY @ 9600 vs DCC-EX @ 115200 (see [usb-device-probe.md](./usb-device-probe.md)).
+2. **Listen** on node ports @ 9600; publish `sensorHardware` patches for Control.
 3. **Release / resume** a port so it can be flashed without stopping the whole service.
-4. **Flash** the bundled sketch with a chosen board prefix (`A`…`Z`, `AA`…).
+4. **Flash** the sketch for a chosen **board type** + prefix (`A`…`Z`, `AA`…).
+5. **Virtual (shim) boards** for UI/CFG/Test without hardware (`POST /api/sensors/shim`).
+6. **Broadcast** accessory address/state lines to **all** nodes (DCC-decoder style); boards filter via CFG.
+7. **Re-push CFG** from inventory when a USB node reconnects (after boot delay).
+8. **Bluetooth** (ESP32 SPP) on Linux/BlueZ — scan/pair APIs; desktop uses shims.
 
-Wi‑Fi (ESP32) and Bluetooth sensor transports are reserved in the API/UI as **Coming soon**.
+## Board types
+
+| Id | Hardware | Flash FQBN |
+|----|----------|------------|
+| `nano-avr` | Arduino Nano 5 V | `arduino:avr:nano` |
+| `mega-avr` | Arduino Mega 5 V | `arduino:avr:mega` |
+| `nano-esp32` | ESP32 Nano-class 3.3 V | `esp32:esp32:esp32` |
+| `mega-esp32` | ESP32 Mega-class 3.3 V | `esp32:esp32:esp32` |
+
+Silk-screen labels in the UI match the PCB (`D6` = D6). See bundled `SENSOR-BOARD.md`.
+
+## Inventory
+
+`~/.dcc-io/nodes.json` stores prefix, boardType, transport, pins/outputs/CFG (including `opticalDistricts[]` for analogue sensor groups with a Reference pin and `sensitivityPct`).
 
 ## Flash from the UI
 
-1. Open Connect config → **Sensors**.
-2. Pick the USB port and a prefix.
-3. Click **Flash board** (Connect releases the port, runs `arduino-cli`, then resumes listening).
+1. Open Connect → **Nodes**.
+2. Pick port, **board type**, and prefix (or add a Virtual board).
+3. **Flash board** (Connect releases the port, runs `arduino-cli`, resumes).
 
-Channels created:
-
-| Kind | Pins | IDs |
-|------|------|-----|
-| Optical | A0–A6 | `{prefix}0` … `{prefix}6` |
-| Digital | D2–D12 (`INPUT_PULLUP`; D13 LED skipped) | `{prefix}D2` … `{prefix}D12` |
-
-The Sensors page shows each board as an LED status panel (amber = optical DETECTED, green = digital DETECTED).
-
-## Toolchain (headless package install)
-
-On `panelsdcc-connect` install, `postinst` runs:
+## Toolchain
 
 ```bash
 sudo panelsdcc-connect-arduino-install
 ```
 
-That downloads official **arduino-cli** for the host arch and installs the **`arduino:avr`**
-core into `/var/lib/panelsdcc-connect/arduino` (owned by `dcc-io`).
-
-Paths:
+Installs `arduino-cli`, **`arduino:avr`**, and **`esp32:esp32`** into `/var/lib/panelsdcc-connect/arduino`.
 
 | Item | Path |
 |------|------|
 | CLI | `/usr/lib/panelsdcc-connect/bin/arduino-cli` |
 | Data | `/var/lib/panelsdcc-connect/arduino` |
-| Sketch | `/usr/share/panelsdcc-connect/firmware/panelsdcc-sensor-board/` |
+| Sketches | `/usr/share/panelsdcc-connect/firmware/panelsdcc-sensor-board[-mega|-esp32]` |
+| Shared engine | `/usr/share/panelsdcc-connect/firmware/common` (copied into flash workdir) |
 
-Network is required once at install. If it failed:
-
-```bash
-sudo panelsdcc-connect-arduino-install
-```
-
-## Serial probe
-
-CH340 ports are probed for the sensor READY banner @ 9600 (with a longer boot wait
-and one retry), then DCC-EX @ 115200. Auto-probe starts a few seconds after Connect
-boots so USB can settle.
-
-If a board stays missing after reboot, open **Sensors → USB candidates → Probe now**,
-or use **Probe now** on the DCC Discover row.
+## API (selected)
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/sensors` | Boards (`channels[]`), candidates needing probe, transports |
-| POST | `/api/sensors/probe` | `{ "port": "ttyUSB0" }` — classify and start listening if sensor |
-| GET | `/api/sensors/events` | Recent occupancy edges |
-| GET | `/api/sensors/toolchain` | CLI / FQBN readiness |
-| POST | `/api/sensors/{id}/release` | Free tty for flash |
-| POST | `/api/sensors/{id}/resume` | Resume listening |
-| POST | `/api/sensors/flash` | `{ "port", "prefix" }` |
-| GET | `/api/sensors/flash/status` | Progress log |
+| GET | `/api/sensors` | Boards, candidates, profiles, transports |
+| POST | `/api/sensors/shim` | `{ prefix?, boardType }` virtual board |
+| POST | `/api/sensors/flash` | `{ port, prefix, boardType }` |
+| POST | `/api/sensors/{id}/config` | Push CFG JSON |
+| POST | `/api/sensors/{id}/test` | Unicast TEST command |
+| POST | `/api/sensors/{id}/simulate` | Shim channel flip |
+| POST | `/api/sensors/bluetooth/scan` | BlueZ scan (Pi) |
+| POST | `/api/sensors/bluetooth/pair` | `{ address, prefix }` |
 
 ## Serial contract
 
-See bundled `SENSOR-BOARD.md` and [usb-device-probe.md](./usb-device-probe.md).
+See `firmware/.../SENSOR-BOARD.md`.

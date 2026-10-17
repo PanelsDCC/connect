@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
- * Runs arduino-cli compile/upload for PanelsDCC Sensor Board sketches.
+ * Runs arduino-cli compile/upload for PanelsDCC node sketches (by board profile).
  */
 public final class SensorBoardFlasher {
 
@@ -30,7 +30,6 @@ public final class SensorBoardFlasher {
 
     private final Path cliPath;
     private final Path dataDir;
-    private final Path sketchSourceDir;
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "SensorBoardFlash");
         t.setDaemon(true);
@@ -41,24 +40,27 @@ public final class SensorBoardFlasher {
     private final List<String> log = new CopyOnWriteArrayList<>();
     private volatile String port;
     private volatile String prefix;
+    private volatile String boardType = BoardProfile.NANO_AVR;
     private volatile String error;
     private volatile Consumer<Boolean> onComplete;
 
     public SensorBoardFlasher() {
-        this(
-                Paths.get(SensorBoardSupport.DEFAULT_CLI),
-                Paths.get(SensorBoardSupport.DEFAULT_ARDUINO_DATA),
-                Paths.get(SensorBoardSupport.DEFAULT_SKETCH_DIR)
-        );
+        this(Paths.get(SensorBoardSupport.DEFAULT_CLI), Paths.get(SensorBoardSupport.DEFAULT_ARDUINO_DATA));
     }
 
-    public SensorBoardFlasher(Path cliPath, Path dataDir, Path sketchSourceDir) {
+    public SensorBoardFlasher(Path cliPath, Path dataDir) {
         this.cliPath = cliPath;
         this.dataDir = dataDir;
-        this.sketchSourceDir = sketchSourceDir;
     }
 
+    /** @deprecated use {@link #startFlash(String, String, String, Consumer)} */
+    @Deprecated
     public synchronized boolean startFlash(String portName, String boardPrefix, Consumer<Boolean> onComplete) {
+        return startFlash(portName, boardPrefix, BoardProfile.NANO_AVR, onComplete);
+    }
+
+    public synchronized boolean startFlash(
+            String portName, String boardPrefix, String boardTypeId, Consumer<Boolean> onComplete) {
         if (state.get() == State.PREPARING || state.get() == State.COMPILING || state.get() == State.UPLOADING) {
             return false;
         }
@@ -70,11 +72,53 @@ public final class SensorBoardFlasher {
         }
         this.port = SensorBoardSupport.barePort(portName);
         this.prefix = normalized;
+        this.boardType = BoardProfile.normalize(boardTypeId);
         this.error = null;
         this.log.clear();
         this.onComplete = onComplete;
         this.state.set(State.PREPARING);
         executor.submit(this::runFlash);
+        return true;
+    }
+
+    /** Simulated flash for shim / UI rehearsal (no arduino-cli). */
+    public synchronized boolean startShimFlash(String prefix, String boardTypeId, Consumer<Boolean> onComplete) {
+        if (state.get() == State.PREPARING || state.get() == State.COMPILING || state.get() == State.UPLOADING) {
+            return false;
+        }
+        this.port = "virtual";
+        this.prefix = SensorBoardSupport.normalizePrefix(prefix);
+        this.boardType = BoardProfile.normalize(boardTypeId);
+        this.error = null;
+        this.log.clear();
+        this.onComplete = onComplete;
+        this.state.set(State.PREPARING);
+        executor.submit(() -> {
+            boolean ok = false;
+            try {
+                appendLog("Shim flash for " + boardType + " prefix=" + this.prefix);
+                state.set(State.COMPILING);
+                appendLog("Simulating compile " + BoardProfile.require(boardType).fqbn);
+                Thread.sleep(200);
+                state.set(State.UPLOADING);
+                appendLog("Simulating upload (no hardware)");
+                Thread.sleep(200);
+                appendLog("Shim flash succeeded");
+                state.set(State.SUCCESS);
+                ok = true;
+            } catch (Exception e) {
+                fail(e.getMessage() != null ? e.getMessage() : e.toString());
+            } finally {
+                Consumer<Boolean> cb = this.onComplete;
+                this.onComplete = null;
+                if (cb != null) {
+                    try {
+                        cb.accept(ok);
+                    } catch (Exception ignore) {
+                    }
+                }
+            }
+        });
         return true;
     }
 
@@ -87,15 +131,21 @@ public final class SensorBoardFlasher {
                         + " — run: sudo panelsdcc-connect-arduino-install");
                 return;
             }
-            // arduino-cli requires <sketchDir>/<sketchDir>.ino — keep the packaged folder name
+            BoardProfile profile = BoardProfile.require(boardType);
+            Path sketchSourceDir = SensorBoardSupport.resolveSketchDir(boardType);
+            if (!Files.isDirectory(sketchSourceDir)) {
+                fail("Sketch not found for " + boardType + " at " + sketchSourceDir);
+                return;
+            }
             tempRoot = Files.createTempDirectory("panelsdcc-sensor-flash-");
-            Path sketchDir = tempRoot.resolve("panelsdcc-sensor-board");
-            appendLog("Preparing sketch with BOARD_PREFIX=" + prefix);
-            SensorBoardSketchPrep.prepare(sketchSourceDir, sketchDir, prefix);
+            Path sketchDir = tempRoot.resolve(profile.sketchDirName);
+            appendLog("Preparing " + profile.sketchDirName + " BOARD_PREFIX=" + prefix
+                    + " BOARD_TYPE=" + boardType);
+            SensorBoardSketchPrep.prepare(sketchSourceDir, sketchDir, prefix, boardType);
 
             state.set(State.COMPILING);
-            appendLog("Compiling " + SensorBoardSupport.FQBN + " ...");
-            int compileRc = runCli(sketchDir, "compile", "--fqbn", SensorBoardSupport.FQBN, sketchDir.toString());
+            appendLog("Compiling " + profile.fqbn + " ...");
+            int compileRc = runCli(sketchDir, "compile", "--fqbn", profile.fqbn, sketchDir.toString());
             if (compileRc != 0) {
                 fail("Compile failed (exit " + compileRc + ")");
                 return;
@@ -104,7 +154,7 @@ public final class SensorBoardFlasher {
             state.set(State.UPLOADING);
             String device = SensorBoardSupport.devicePath(port);
             appendLog("Uploading to " + device + " ...");
-            int uploadRc = runCli(sketchDir, "upload", "-p", device, "--fqbn", SensorBoardSupport.FQBN,
+            int uploadRc = runCli(sketchDir, "upload", "-p", device, "--fqbn", profile.fqbn,
                     sketchDir.toString());
             if (uploadRc != 0) {
                 fail("Upload failed (exit " + uploadRc + ")");
@@ -169,7 +219,6 @@ public final class SensorBoardFlasher {
             return;
         }
         log.add(line);
-        // Cap log size
         while (log.size() > 400) {
             log.remove(0);
         }
@@ -183,6 +232,9 @@ public final class SensorBoardFlasher {
         }
         if (prefix != null) {
             o.addProperty("prefix", prefix);
+        }
+        if (boardType != null) {
+            o.addProperty("boardType", boardType);
         }
         if (error != null) {
             o.addProperty("error", error);
@@ -201,31 +253,48 @@ public final class SensorBoardFlasher {
         o.addProperty("arduinoCli", cliOk);
         o.addProperty("cliPath", cliPath.toString());
         o.addProperty("dataDir", dataDir.toString());
-        o.addProperty("sketchPath", sketchSourceDir.toString());
-        boolean fqbn = false;
-        if (cliOk) {
-            try {
-                ProcessBuilder pb = new ProcessBuilder(
-                        cliPath.toString(), "board", "details", "-b", SensorBoardSupport.FQBN);
-                Map<String, String> env = pb.environment();
-                env.put("ARDUINO_DIRECTORIES_DATA", dataDir.toString());
-                pb.redirectErrorStream(true);
-                Process p = pb.start();
-                // Drain
-                try (BufferedReader r = new BufferedReader(
-                        new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
-                    while (r.readLine() != null) {
-                        // discard
-                    }
-                }
-                fqbn = p.waitFor() == 0;
-            } catch (Exception e) {
-                fqbn = false;
+        JsonArray profiles = new JsonArray();
+        for (BoardProfile p : BoardProfile.all()) {
+            JsonObject row = new JsonObject();
+            row.addProperty("id", p.id);
+            row.addProperty("label", p.label);
+            row.addProperty("fqbn", p.fqbn);
+            row.addProperty("sketchDir", p.sketchDirName);
+            row.addProperty("defaultTransport", p.defaultTransport);
+            Path sketch = SensorBoardSupport.resolveSketchDir(p.id);
+            row.addProperty("sketchPresent", Files.isDirectory(sketch));
+            boolean fqbnReady = false;
+            if (cliOk) {
+                fqbnReady = probeFqbn(p.fqbn);
             }
+            row.addProperty("fqbnReady", fqbnReady);
+            profiles.add(row);
         }
-        o.addProperty("fqbnReady", fqbn);
-        o.addProperty("fqbn", SensorBoardSupport.FQBN);
+        o.add("profiles", profiles);
+        // Back-compat fields (Nano)
+        o.addProperty("sketchPath", SensorBoardSupport.resolveSketchDir(BoardProfile.NANO_AVR).toString());
+        o.addProperty("fqbn", BoardProfile.require(BoardProfile.NANO_AVR).fqbn);
+        o.addProperty("fqbnReady", cliOk && probeFqbn(BoardProfile.require(BoardProfile.NANO_AVR).fqbn));
         return o;
+    }
+
+    private boolean probeFqbn(String fqbn) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(cliPath.toString(), "board", "details", "-b", fqbn);
+            Map<String, String> env = pb.environment();
+            env.put("ARDUINO_DIRECTORIES_DATA", dataDir.toString());
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            try (BufferedReader r = new BufferedReader(
+                    new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                while (r.readLine() != null) {
+                    // discard
+                }
+            }
+            return p.waitFor() == 0;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public boolean isBusy() {
@@ -233,21 +302,21 @@ public final class SensorBoardFlasher {
         return s == State.PREPARING || s == State.COMPILING || s == State.UPLOADING;
     }
 
+    public void shutdown() {
+        executor.shutdownNow();
+    }
+
     private static void deleteRecursive(Path root) throws IOException {
         if (!Files.exists(root)) {
             return;
         }
-        Files.walk(root)
-                .sorted((a, b) -> b.compareTo(a))
-                .forEach(p -> {
-                    try {
-                        Files.deleteIfExists(p);
-                    } catch (IOException ignore) {
-                    }
-                });
-    }
-
-    public void shutdown() {
-        executor.shutdownNow();
+        try (var walk = Files.walk(root)) {
+            walk.sorted((a, b) -> b.compareTo(a)).forEach(p -> {
+                try {
+                    Files.deleteIfExists(p);
+                } catch (IOException ignore) {
+                }
+            });
+        }
     }
 }

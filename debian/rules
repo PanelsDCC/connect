@@ -42,9 +42,15 @@ override_dh_auto_install:
 	cp scripts/panelsdcc-connect-arduino-install debian/tmp/usr/local/bin/
 	chmod +x debian/tmp/usr/local/bin/panelsdcc-connect-arduino-install
 
-	# Bundled PanelsDCC Sensor Board firmware
+	# Bundled PanelsDCC node firmware (common engine + Nano / Mega / ESP32)
+	mkdir -p debian/tmp/usr/share/panelsdcc-connect/firmware/common
+	cp -a firmware/common/. debian/tmp/usr/share/panelsdcc-connect/firmware/common/
 	mkdir -p debian/tmp/usr/share/panelsdcc-connect/firmware/panelsdcc-sensor-board
 	cp -a firmware/panelsdcc-sensor-board/. debian/tmp/usr/share/panelsdcc-connect/firmware/panelsdcc-sensor-board/
+	mkdir -p debian/tmp/usr/share/panelsdcc-connect/firmware/panelsdcc-sensor-board-mega
+	cp -a firmware/panelsdcc-sensor-board-mega/. debian/tmp/usr/share/panelsdcc-connect/firmware/panelsdcc-sensor-board-mega/
+	mkdir -p debian/tmp/usr/share/panelsdcc-connect/firmware/panelsdcc-sensor-board-esp32
+	cp -a firmware/panelsdcc-sensor-board-esp32/. debian/tmp/usr/share/panelsdcc-connect/firmware/panelsdcc-sensor-board-esp32/
 	
 	# sudoers fragment for web-triggered dpkg install (dcc-io -> updater script)
 	mkdir -p debian/tmp/etc/sudoers.d
