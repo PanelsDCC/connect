@@ -258,8 +258,8 @@ public final class BoardProfile {
         }
         return new BoardProfile(
                 NANO_ESP32,
-                "ESP32 Nano-class (3.3V, Bluetooth)",
-                "esp32:esp32:esp32",
+                "Arduino Nano ESP32 (3.3V)",
+                "arduino:esp32:nano_nora",
                 "panelsdcc-sensor-board-esp32",
                 SensorBoardSupport.TRANSPORT_BLE,
                 pins,

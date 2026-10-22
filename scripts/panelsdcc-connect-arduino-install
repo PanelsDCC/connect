@@ -96,6 +96,10 @@ info "Verifying arduino:avr:mega ..."
 "$CLI_BIN" board details -b arduino:avr:mega >/dev/null || \
     error "arduino:avr:mega not available after core install"
 
+info "Installing Servo library (NodeEngine includes Servo.h; not part of the AVR core)..."
+"$CLI_BIN" lib update-index || error "lib update-index failed"
+"$CLI_BIN" lib install Servo || error "lib install Servo failed"
+
 info "Installing esp32:esp32 core (ESP32 node boards)..."
 "$CLI_BIN" core update-index || warn "esp32 index update failed (retry later)"
 if "$CLI_BIN" core install esp32:esp32; then

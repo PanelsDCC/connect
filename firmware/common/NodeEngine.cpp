@@ -21,9 +21,6 @@ static NodePinRoleEntry gRoles[NODE_MAX_PIN_ROLES];
 static uint8_t gRoleCount = 0;
 static int gRefGpio = -1;
 
-static NodeSensor gSensors[NODE_MAX_SENSORS];
-static uint8_t gSensorCount = 0;
-
 static NodeOutput gOutputs[NODE_MAX_OUTPUTS];
 static uint8_t gOutputCount = 0;
 
@@ -32,15 +29,6 @@ static uint8_t gServoCount = 0;
 
 static const unsigned long CLEAR_HOLD_MS = 1000;
 static const unsigned long LC_CLEARING_MS = 2000;
-
-/** Per-optical-sensor district meta applied after rebuildSensorsFromRoles. */
-struct OpticalMeta {
-  char label[5];
-  int refGpio;
-  uint8_t sensitivityPct;
-};
-static OpticalMeta gOpticalMeta[NODE_MAX_SENSORS];
-static uint8_t gOpticalMetaCount = 0;
 
 static const char EEPROM_MAGIC[4] = {'P', 'D', 'C', 'C'};
 static const uint8_t CFG_VERSION = 1;
@@ -384,48 +372,36 @@ static void saveCfgToStorage(const char* json, uint16_t len) {
 static void clearRuntime() {
   detachAllServos();
   gRoleCount = 0;
-  gSensorCount = 0;
   gOutputCount = 0;
   gRefGpio = -1;
-  gOpticalMetaCount = 0;
   memset(gOutputs, 0, sizeof(gOutputs));
-  memset(gSensors, 0, sizeof(gSensors));
   memset(gRoles, 0, sizeof(gRoles));
-  memset(gOpticalMeta, 0, sizeof(gOpticalMeta));
+}
+
+static NodePinRoleEntry* findRoleByLabel(const char* silk) {
+  for (uint8_t i = 0; i < gRoleCount; i++) {
+    if (streqi(gRoles[i].label, silk)) return &gRoles[i];
+  }
+  return nullptr;
 }
 
 static void addOpticalMeta(const char* label, int refGpio, uint8_t pct) {
-  if (gOpticalMetaCount >= NODE_MAX_SENSORS) return;
-  OpticalMeta* m = &gOpticalMeta[gOpticalMetaCount++];
-  normalizeSilk(m->label, sizeof(m->label), label);
-  m->refGpio = refGpio;
+  char silk[5];
+  normalizeSilk(silk, sizeof(silk), label);
+  NodePinRoleEntry* r = findRoleByLabel(silk);
+  if (!r) return;
   if (pct < 1) pct = NODE_DEFAULT_SENSITIVITY_PCT;
   if (pct > 100) pct = 100;
-  m->sensitivityPct = pct;
+  r->sensitivityPct = pct;
+  r->refGpio = refGpio;
 }
 
-static void applyOpticalMetaToSensors() {
-  for (uint8_t i = 0; i < gSensorCount; i++) {
-    NodeSensor* s = &gSensors[i];
-    if (!s->optical) {
-      s->refGpio = -1;
-      s->sensitivityPct = 0;
-      continue;
-    }
-    s->refGpio = gRefGpio;
-    s->sensitivityPct = NODE_DEFAULT_SENSITIVITY_PCT;
-    for (uint8_t m = 0; m < gOpticalMetaCount; m++) {
-      if (streqi(gOpticalMeta[m].label, s->label)) {
-        s->refGpio = gOpticalMeta[m].refGpio;
-        s->sensitivityPct = gOpticalMeta[m].sensitivityPct;
-        break;
-      }
-    }
-  }
+static bool roleIsSensor(const NodePinRoleEntry* e) {
+  return e->role == ROLE_OPTICAL || e->role == ROLE_DIGITAL_IN;
 }
 
-static bool opticalActive(const NodeSensor* sens) {
-  if (!sens->optical || sens->gpio < 0) return false;
+static bool opticalActive(const NodePinRoleEntry* sens) {
+  if (sens->role != ROLE_OPTICAL || sens->gpio < 0) return false;
   int refGpio = sens->refGpio >= 0 ? sens->refGpio : gRefGpio;
   int ref = (refGpio >= 0) ? analogRead(refGpio) : 0;
   int val = analogRead(sens->gpio);
@@ -446,30 +422,21 @@ static void addRole(const char* label, NodePinRole role) {
   NodePinRoleEntry* e = &gRoles[gRoleCount++];
   strCopyCap(e->label, sizeof(e->label), silk);
   e->role = role;
+  e->sensitivityPct = 0;
+  e->reportedActive = false;
   e->gpio = gpio;
+  e->refGpio = -1;
+  e->clearSinceMs = 0;
   if (role == ROLE_REF) gRefGpio = gpio;
 }
 
-static void rebuildSensorsFromRoles() {
-  gSensorCount = 0;
+static void applySensorPinModes() {
   for (uint8_t i = 0; i < gRoleCount; i++) {
     NodePinRoleEntry* e = &gRoles[i];
-    if (e->role != ROLE_OPTICAL && e->role != ROLE_DIGITAL_IN) continue;
-    if (gSensorCount >= NODE_MAX_SENSORS) break;
-    NodeSensor* s = &gSensors[gSensorCount++];
-    strCopyCap(s->label, sizeof(s->label), e->label);
-    s->gpio = e->gpio;
-    s->optical = (e->role == ROLE_OPTICAL);
-    s->channel = silkNumber(e->label);
-    s->refGpio = -1;
-    s->sensitivityPct = NODE_DEFAULT_SENSITIVITY_PCT;
-    s->reportedActive = false;
-    s->clearSinceMs = 0;
-    if (!s->optical) {
-      pinMode(s->gpio, INPUT_PULLUP);
+    if (e->role == ROLE_DIGITAL_IN && e->gpio >= 0) {
+      pinMode(e->gpio, INPUT_PULLUP);
     }
   }
-  applyOpticalMetaToSensors();
 }
 
 static void applyOutputPinModes(NodeOutput* o) {
@@ -763,14 +730,13 @@ static void stripOpticalAndRefRoles() {
   }
   gRoleCount = w;
   gRefGpio = -1;
-  gOpticalMetaCount = 0;
 }
 
 static void rebuildFromCfgBuffer(const char* json) {
   clearRuntime();
   if (!json || !json[0]) {
     boardLoadDefaultPinRoles(gRoles, &gRoleCount, &gRefGpio);
-    rebuildSensorsFromRoles();
+    applySensorPinModes();
     return;
   }
   const char* root = skipWs(json);
@@ -798,11 +764,7 @@ static void rebuildFromCfgBuffer(const char* json) {
     if (gRefGpio < 0) {
       for (uint8_t i = 0; i < gRoleCount; i++) {
         if (gRoles[i].role == ROLE_OPTICAL) {
-          NodePinRoleEntry tmp[NODE_MAX_PIN_ROLES];
-          uint8_t tc = 0;
-          int ref = -1;
-          boardLoadDefaultPinRoles(tmp, &tc, &ref);
-          gRefGpio = ref;
+          gRefGpio = boardAmbientRefGpio();
           break;
         }
       }
@@ -815,7 +777,7 @@ static void rebuildFromCfgBuffer(const char* json) {
     }
   }
 
-  rebuildSensorsFromRoles();
+  applySensorPinModes();
   const char* outs = findKey(root, "outputs");
   if (outs) parseOutputsArray(outs);
 }
@@ -845,8 +807,19 @@ void nodeReplyCfg() {
   }
 }
 
+void nodeReplyId() {
+  Stream* s = boardLink();
+  if (!s) return;
+  const char* prefix = boardPrefix();
+  const char* type = boardType();
+  s->print("ID ");
+  s->print(prefix ? prefix : "?");
+  s->print(' ');
+  s->println(type ? type : "?");
+}
+
 // ---- emit sensors ----
-static void emitSensor(const NodeSensor* sens, bool active) {
+static void emitSensor(const NodePinRoleEntry* sens, bool active) {
   Stream* s = boardLink();
   if (!s) return;
   s->print(boardPrefix());
@@ -857,9 +830,10 @@ static void emitSensor(const NodeSensor* sens, bool active) {
 
 static void snapshotSensors() {
   unsigned long now = millis();
-  for (uint8_t i = 0; i < gSensorCount; i++) {
-    NodeSensor* sens = &gSensors[i];
-    bool raw = sens->optical ? opticalActive(sens) : (digitalRead(sens->gpio) == LOW);
+  for (uint8_t i = 0; i < gRoleCount; i++) {
+    NodePinRoleEntry* sens = &gRoles[i];
+    if (!roleIsSensor(sens)) continue;
+    bool raw = sens->role == ROLE_OPTICAL ? opticalActive(sens) : (digitalRead(sens->gpio) == LOW);
     sens->reportedActive = raw;
     sens->clearSinceMs = now;
     emitSensor(sens, raw);
@@ -868,9 +842,10 @@ static void snapshotSensors() {
 
 static void scanSensors() {
   unsigned long now = millis();
-  for (uint8_t i = 0; i < gSensorCount; i++) {
-    NodeSensor* sens = &gSensors[i];
-    bool raw = sens->optical ? opticalActive(sens) : (digitalRead(sens->gpio) == LOW);
+  for (uint8_t i = 0; i < gRoleCount; i++) {
+    NodePinRoleEntry* sens = &gRoles[i];
+    if (!roleIsSensor(sens)) continue;
+    bool raw = sens->role == ROLE_OPTICAL ? opticalActive(sens) : (digitalRead(sens->gpio) == LOW);
     if (raw) {
       sens->clearSinceMs = 0;
       if (!sens->reportedActive) {
@@ -1321,6 +1296,10 @@ static void handleLine(char* line) {
     nodeReplyCfg();
     return;
   }
+  if (streqi(line, "ID?")) {
+    nodeReplyId();
+    return;
+  }
   if (startsWithi(line, "TEST ")) {
     handleTest(line + 5);
     return;
@@ -1374,7 +1353,7 @@ void nodeEngineBegin() {
     rebuildFromCfgBuffer(gLine);
   } else {
     boardLoadDefaultPinRoles(gRoles, &gRoleCount, &gRefGpio);
-    rebuildSensorsFromRoles();
+    applySensorPinModes();
   }
   gLineLen = 0;
 

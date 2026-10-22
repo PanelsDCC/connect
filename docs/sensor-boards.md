@@ -41,7 +41,7 @@ Silk-screen labels in the UI match the PCB (`D6` = D6). See bundled `SENSOR-BOAR
 sudo panelsdcc-connect-arduino-install
 ```
 
-Installs `arduino-cli`, **`arduino:avr`**, and **`esp32:esp32`** into `/var/lib/panelsdcc-connect/arduino`.
+Installs `arduino-cli`, **`arduino:avr`**, **`esp32:esp32`**, and the **Servo** library into `/var/lib/panelsdcc-connect/arduino`.
 
 | Item | Path |
 |------|------|

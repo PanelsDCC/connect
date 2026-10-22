@@ -84,18 +84,50 @@ public final class UsbSerialProbe {
         return trySensorBoardOnce(portName);
     }
 
+    /** Live sensor report, e.g. {@code A-A3: DETECTED}. Prefix is group 1. */
+    private static final Pattern SENSOR_EDGE =
+            Pattern.compile("^([A-Z]{1,2})-[A-Z]\\d+: (DETECTED|CLEAR)$");
+    /** On-demand identity: {@code ID B nano-esp32}. */
+    private static final Pattern SENSOR_ID =
+            Pattern.compile("^ID ([A-Za-z]{1,2}) (\\S+)\\s*$");
+
     private ProbeResult trySensorBoardOnce(String portName) {
         SerialPortOps port = portFactory.create();
         try {
             port.open(portName, SENSOR_BAUD);
             // Opening often toggles DTR and resets AVR Nanos — wait for boot banner.
             List<String> lines = port.readLines(SENSOR_BOOT_WAIT_MS);
-            for (String line : lines) {
-                Matcher m = SENSOR_READY.matcher(line.trim());
-                if (m.matches()) {
-                    String boardType = m.groupCount() >= 2 ? m.group(2) : null;
-                    return ProbeResult.sensorBoard(m.group(1), boardType);
-                }
+            ProbeResult ready = readyFrom(lines);
+            if (ready != null) {
+                return ready;
+            }
+            // Native-USB boards (Arduino Nano ESP32) do not reset when the port
+            // opens, so the boot banner is not repeated. Ask for identity, then
+            // fall back to CFG? for images flashed before ID? existed.
+            port.write("ID?\n".getBytes(StandardCharsets.UTF_8));
+            lines.addAll(port.readLines(800));
+            ProbeResult identified = idFrom(lines);
+            if (identified != null) {
+                return identified;
+            }
+            ready = readyFrom(lines);
+            if (ready != null) {
+                return ready;
+            }
+            port.write("CFG?\n".getBytes(StandardCharsets.UTF_8));
+            lines.addAll(port.readLines(800));
+            identified = idFrom(lines);
+            if (identified != null) {
+                return identified;
+            }
+            ready = readyFrom(lines);
+            if (ready != null) {
+                return ready;
+            }
+            if (looksLikeLiveNode(lines)) {
+                // Prefix stays unknown unless a sensor line names it. Callers keep
+                // the prefix chosen at flash time instead of assuming A.
+                return ProbeResult.sensorBoard(prefixFromSensorLines(lines), null);
             }
             return ProbeResult.unknown();
         } catch (Exception e) {
@@ -104,6 +136,47 @@ public final class UsbSerialProbe {
         } finally {
             port.closeQuietly();
         }
+    }
+
+    private static ProbeResult idFrom(List<String> lines) {
+        for (String line : lines) {
+            Matcher m = SENSOR_ID.matcher(line.trim());
+            if (m.matches()) {
+                return ProbeResult.sensorBoard(m.group(1).toUpperCase(), m.group(2));
+            }
+        }
+        return null;
+    }
+
+    private static ProbeResult readyFrom(List<String> lines) {
+        for (String line : lines) {
+            Matcher m = SENSOR_READY.matcher(line.trim());
+            if (m.matches()) {
+                String boardType = m.groupCount() >= 2 ? m.group(2) : null;
+                return ProbeResult.sensorBoard(m.group(1), boardType);
+            }
+        }
+        return null;
+    }
+
+    private static boolean looksLikeLiveNode(List<String> lines) {
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("CFG ") || SENSOR_EDGE.matcher(trimmed).matches()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String prefixFromSensorLines(List<String> lines) {
+        for (String line : lines) {
+            Matcher m = SENSOR_EDGE.matcher(line.trim());
+            if (m.matches()) {
+                return m.group(1);
+            }
+        }
+        return null;
     }
 
     private static void sleepQuietly(long ms) {
@@ -330,31 +403,26 @@ public final class UsbSerialProbe {
             long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(0, timeoutMs));
             ByteArrayOutputStream buf = new ByteArrayOutputStream();
             byte[] chunk = new byte[256];
+            // available() stays 0 on this CDC device even when bytes are waiting.
+            // A blocking read drains them; otherwise the Nano fills its TX buffer
+            // and stops reading commands while the UI still looks live.
             while (System.nanoTime() < deadline) {
-                int available = in.available();
-                if (available > 0) {
-                    int n = in.read(chunk, 0, Math.min(chunk.length, available));
-                    if (n > 0) {
-                        buf.write(chunk, 0, n);
+                int n;
+                try {
+                    n = in.read(chunk);
+                } catch (IOException e) {
+                    // Semi-blocking reads throw when the 100ms slice ends with no bytes.
+                    String msg = e.getMessage() == null ? "" : e.getMessage().toLowerCase();
+                    if (msg.contains("timed out")) {
+                        continue;
                     }
-                } else {
-                    try {
-                        Thread.sleep(20);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
+                    throw e;
                 }
-            }
-            // Drain anything that arrived at the end
-            int available = in.available();
-            while (available > 0) {
-                int n = in.read(chunk, 0, Math.min(chunk.length, available));
-                if (n <= 0) {
+                if (n > 0) {
+                    buf.write(chunk, 0, n);
+                } else if (n < 0) {
                     break;
                 }
-                buf.write(chunk, 0, n);
-                available = in.available();
             }
             String text = buf.toString(StandardCharsets.UTF_8.name());
             List<String> lines = new ArrayList<>();

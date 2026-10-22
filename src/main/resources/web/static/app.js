@@ -2749,7 +2749,7 @@ async function loadSensorsBoards() {
     if (nodesUi.screen === 'view') renderNodesView();
     else if (nodesUi.screen === 'configure') renderNodesConfigure();
     else if (nodesUi.screen === 'audit') renderNodesAudit();
-    else if (nodesUi.screen === 'add' && nodesUi.addStep === 'details') renderNodesAddDetailsBody();
+    else if (nodesUi.screen === 'add' && nodesUi.addStep === 'details') refreshNodesAddDetails();
   } catch (err) {
     const list = document.getElementById('sensorsBoardList');
     if (list) list.innerHTML = '<p class="wifi-hint">Failed to load boards: ' + err.message + '</p>';
@@ -2975,6 +2975,55 @@ function renderNodesAdd() {
   if (nodesUi.addStep === 'action') prepareNodesAddAction();
 }
 
+function addDetailsControlFocused() {
+  const active = document.activeElement;
+  const body = document.getElementById('nodesAddDetailsBody');
+  if (!active || !body || !body.contains(active)) return false;
+  const tag = active.tagName;
+  return tag === 'SELECT' || tag === 'INPUT' || tag === 'TEXTAREA';
+}
+
+function probeCandidateKey() {
+  return (sensorsPageCache?.candidates || [])
+    .map((c) => (c.port || c.endpoint || '') + '|' + (c.name || ''))
+    .join('\n');
+}
+
+/** Poll must not rebuild the flash form — that closes open selects. */
+function refreshNodesAddDetails() {
+  const body = document.getElementById('nodesAddDetailsBody');
+  const method = nodesUi.addMethod || '';
+  if (!body) return;
+  if (body.getAttribute('data-add-method') !== method) {
+    renderNodesAddDetailsBody();
+    return;
+  }
+  if (addDetailsControlFocused()) return;
+  if (method === 'usb') syncAddUsbPortOptions();
+  else if (method === 'probe' && body.getAttribute('data-probe-key') !== probeCandidateKey()) {
+    renderNodesAddDetailsBody();
+  }
+}
+
+function syncAddUsbPortOptions() {
+  const sel = document.getElementById('addUsbPort');
+  if (!sel || document.activeElement === sel) return;
+  const ports = Array.from(document.getElementById('sensorFlashPort')?.options || [])
+    .filter((o) => o.value)
+    .map((o) => ({ value: o.value, text: o.textContent }));
+  const existing = Array.from(sel.options).filter((o) => o.value).map((o) => o.value);
+  if (ports.length === existing.length && ports.every((p, i) => p.value === existing[i])) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">Select port…</option>';
+  ports.forEach((p) => {
+    const opt = document.createElement('option');
+    opt.value = p.value;
+    opt.textContent = p.text;
+    sel.appendChild(opt);
+  });
+  if (prev && ports.some((p) => p.value === prev)) sel.value = prev;
+}
+
 function renderNodesAddDetailsBody() {
   const body = document.getElementById('nodesAddDetailsBody');
   const title = document.getElementById('nodesAddDetailsTitle');
@@ -3081,6 +3130,9 @@ function renderNodesAddDetailsBody() {
       });
     }
   }
+  body.setAttribute('data-add-method', nodesUi.addMethod || '');
+  if (nodesUi.addMethod === 'probe') body.setAttribute('data-probe-key', probeCandidateKey());
+  else body.removeAttribute('data-probe-key');
 }
 
 function updateAddUsbHint() {
@@ -4735,8 +4787,7 @@ function bindNodesUi() {
 
 function refreshSensorsPage() {
   loadSensorsToolchain();
-  loadSensorFlashPorts();
-  loadSensorsBoards().then(() => {
+  loadSensorFlashPorts().then(() => loadSensorsBoards()).then(() => {
     if (currentPageFromHash() === 'sensors') syncNodesScreenFromHash();
   });
 }
@@ -4765,8 +4816,8 @@ function scheduleSensorsPoll() {
   const ms = sensorsPageCache?.outputAnimating ? 250 : 1500;
   sensorsPollTimer = setTimeout(async () => {
   if (currentPageFromHash() === 'sensors') {
+      await loadSensorFlashPorts();
       await loadSensorsBoards();
-    loadSensorFlashPorts();
   }
     scheduleSensorsPoll();
   }, ms);

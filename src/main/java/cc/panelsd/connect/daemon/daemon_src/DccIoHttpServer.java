@@ -1216,6 +1216,7 @@ final class DccIoHttpServer {
                 
                 Headers headers = exchange.getResponseHeaders();
                 headers.set("Content-Type", contentType + "; charset=utf-8");
+                headers.set("Cache-Control", "no-cache");
                 byte[] bytes = is.readAllBytes();
                 exchange.sendResponseHeaders(200, bytes.length);
                 try (OutputStream os = exchange.getResponseBody()) {
@@ -1239,6 +1240,7 @@ final class DccIoHttpServer {
         private void sendHtml(HttpExchange exchange, int status, String html) throws IOException {
             Headers headers = exchange.getResponseHeaders();
             headers.set("Content-Type", "text/html; charset=utf-8");
+            headers.set("Cache-Control", "no-cache");
             byte[] bytes = html.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(status, bytes.length);
             try (OutputStream os = exchange.getResponseBody()) {

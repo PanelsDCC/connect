@@ -45,6 +45,51 @@ class UsbSerialProbeTest {
     }
 
     @Test
+    void classifiesAlreadyRunningNodeFromIdQuery() {
+        ScriptedPortOps ops = new ScriptedPortOps();
+        ops.whenOpen(9600, "");
+        ops.replyToWrite("ID B nano-esp32\n");
+        UsbSerialProbe probe = new UsbSerialProbe(() -> ops);
+
+        UsbSerialProbe.ProbeResult result = probe.classify("ttyACM0");
+
+        assertEquals(UsbSerialProbe.DeviceType.SENSOR_BOARD, result.type);
+        assertEquals("B", result.prefix);
+        assertEquals("nano-esp32", result.boardType);
+        assertTrue(ops.writes.stream().anyMatch(w -> new String(w, StandardCharsets.UTF_8).startsWith("ID?")));
+        assertTrue(ops.writes.stream().noneMatch(w -> new String(w, StandardCharsets.UTF_8).startsWith("CFG?")));
+    }
+
+    @Test
+    void classifiesAlreadyRunningNodeFromCfgQuery() {
+        ScriptedPortOps ops = new ScriptedPortOps();
+        ops.whenOpen(9600, "A-A3: DETECTED\n");
+        ops.replyToWrite("CFG {}\n");
+        UsbSerialProbe probe = new UsbSerialProbe(() -> ops);
+
+        UsbSerialProbe.ProbeResult result = probe.classify("ttyACM0");
+
+        assertEquals(UsbSerialProbe.DeviceType.SENSOR_BOARD, result.type);
+        assertEquals("A", result.prefix);
+        assertNull(result.boardType);
+        assertTrue(ops.writes.stream().anyMatch(w -> new String(w, StandardCharsets.UTF_8).startsWith("CFG?")));
+    }
+
+    @Test
+    void cfgQueryWithoutSensorEdgeDoesNotInventPrefix() {
+        ScriptedPortOps ops = new ScriptedPortOps();
+        ops.whenOpen(9600, "");
+        ops.replyToWrite("CFG {}\n");
+        UsbSerialProbe probe = new UsbSerialProbe(() -> ops);
+
+        UsbSerialProbe.ProbeResult result = probe.classify("ttyACM0");
+
+        assertEquals(UsbSerialProbe.DeviceType.SENSOR_BOARD, result.type);
+        assertNull(result.prefix);
+        assertNull(result.boardType);
+    }
+
+    @Test
     void retriesSensorBannerOnSecondOpen() {
         ScriptedPortOps ops = new ScriptedPortOps();
         ops.whenOpen(9600, "");
@@ -93,11 +138,16 @@ class UsbSerialProbeTest {
         private final List<byte[]> writes = new CopyOnWriteArrayList<>();
         private final List<BaudScript> scripts = new ArrayList<>();
         private String pendingRead = "";
+        private String writeReply = "";
         private boolean closed = true;
         boolean failOpen = false;
 
         void whenOpen(int baud, String response) {
             scripts.add(new BaudScript(baud, response));
+        }
+
+        void replyToWrite(String response) {
+            writeReply = response;
         }
 
         @Override
@@ -120,6 +170,9 @@ class UsbSerialProbeTest {
         @Override
         public void write(byte[] data) {
             writes.add(Arrays.copyOf(data, data.length));
+            if (!writeReply.isEmpty()) {
+                pendingRead = writeReply;
+            }
         }
 
         @Override

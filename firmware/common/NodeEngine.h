@@ -9,32 +9,34 @@
 
 /* Limits: Nano AVR has 2KB SRAM / 1KB EEPROM — keep tight there. */
 #if defined(__AVR_ATmega328P__) || defined(__AVR_ATmega168__)
+/* 328P has 2KB SRAM. These caps leave room for the stack.
+   CFG JSON must stay within NODE_MAX_CFG (one serial line). */
 #ifndef NODE_MAX_CFG
-#define NODE_MAX_CFG 900
+#define NODE_MAX_CFG 240
 #endif
 #ifndef NODE_MAX_LINE
-#define NODE_MAX_LINE 960
+#define NODE_MAX_LINE 256
 #endif
 #ifndef NODE_MAX_PIN_ROLES
-#define NODE_MAX_PIN_ROLES 24
+#define NODE_MAX_PIN_ROLES 20
 #endif
 #ifndef NODE_MAX_SENSORS
 #define NODE_MAX_SENSORS 18
 #endif
 #ifndef NODE_MAX_OUTPUTS
-#define NODE_MAX_OUTPUTS 4
+#define NODE_MAX_OUTPUTS 2
 #endif
 #ifndef NODE_MAX_OUT_PINS
 #define NODE_MAX_OUT_PINS 6
 #endif
 #ifndef NODE_MAX_TRIGGERS
-#define NODE_MAX_TRIGGERS 4
+#define NODE_MAX_TRIGGERS 2
 #endif
 #ifndef NODE_MAX_SERVOS
-#define NODE_MAX_SERVOS 4
+#define NODE_MAX_SERVOS 2
 #endif
 #ifndef NODE_MAX_DISTRICTS
-#define NODE_MAX_DISTRICTS 4
+#define NODE_MAX_DISTRICTS 2
 #endif
 #else
 #ifndef NODE_MAX_CFG
@@ -103,7 +105,11 @@ enum LcPhase : uint8_t {
 struct NodePinRoleEntry {
   char label[5]; // "D22", "A15"
   NodePinRole role;
+  uint8_t sensitivityPct; // optical district; 0 = default
+  bool reportedActive;
   int gpio;
+  int refGpio; // optical: district reference pin, else -1
+  unsigned long clearSinceMs;
 };
 
 struct NodeSensor {
@@ -176,6 +182,9 @@ int boardSilkToGpio(const char* silk);
 /** Fill default optical/digital_in roles when EEPROM empty / CFG has no pins. */
 void boardLoadDefaultPinRoles(NodePinRoleEntry* roles, uint8_t* count, int* refGpio);
 
+/** Ambient reference pin used when a district does not name one (A7 / A15). */
+int boardAmbientRefGpio();
+
 /** Serial (or BT) stream for commands and sensor lines. */
 Stream* boardLink();
 
@@ -194,3 +203,5 @@ void nodeEngineTick();
 /** Persist / apply helpers exposed for tests if needed. */
 bool nodeApplyCfgJson(const char* json);
 void nodeReplyCfg();
+/** `ID?` → `ID {prefix} {boardType}` so a host can learn identity without a reboot. */
+void nodeReplyId();

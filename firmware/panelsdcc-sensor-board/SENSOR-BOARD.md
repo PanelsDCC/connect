@@ -45,6 +45,7 @@ If omitted or empty, Connect configures no optical sensors until you add distric
 | CLEAR debounce | 1000 ms |
 | CFG | `CFG {json}` — pin roles, DCC↔output params (EEPROM on AVR / NVS on ESP32) |
 | CFG pull | `CFG?` → `CFG {json}` |
+| Identity | `ID?` → `ID {prefix} {boardType}` (no reboot required) |
 | Layout accessory | `{address} ON` / `{address} OFF` — **broadcast to all nodes**; board ignores if not in CFG. `ON` = accessory Forward, `OFF` = Reverse (same mapping as panels-modular closed/thrown). |
 | Test (unicast) | `TEST {address} ON\|OFF`; `TEST SERVO {pin} {deg}` / `TEST PWM {pin} {0-100}`; `TEST SAMPLE {ref} [{sensor}]` → `SAMPLE A15=812 A0=1020 delta=208 pct=25` (calibrate sensitivity) |
 

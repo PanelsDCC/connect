@@ -12,9 +12,11 @@
 
 #include "NodeEngine.h"
 
-#if defined(ESP32)
+// ESP32-S3 (Arduino Nano ESP32) has BLE only, not Classic SPP.
+#if defined(ESP32) && defined(CONFIG_BT_CLASSIC_ENABLED)
 #include "BluetoothSerial.h"
 BluetoothSerial SerialBT;
+#define PANELS_HAVE_BT 1
 #endif
 
 const char* BOARD_PREFIX = "A";
@@ -30,23 +32,21 @@ static bool isMegaProfile() {
   return String(BOARD_TYPE).startsWith("mega");
 }
 
-// Nano-class silk → GPIO (illustrative carrier map; adjust per board)
+// Official Arduino Nano ESP32 (ESP32-S3, FQBN arduino:esp32:nano_nora).
+// The core remaps the API, so these are Arduino pin numbers (D2 == 2, A0 == 17),
+// which land on the silk-screen pins. Other Nano-shaped ESP32 boards differ.
 static int nanoSilkToGpio(const char* silk) {
   char c0 = silk[0];
   if (c0 >= 'a' && c0 <= 'z') c0 -= 32;
   int n = atoi(silk + 1);
   if (c0 == 'A') {
-    static const int map[] = {36, 39, 34, 35, 32, 33, 25, 26}; // A0..A7
+    static const int map[] = {17, 18, 19, 20, 21, 22, 23, 24}; // A0..A7
     if (n < 0 || n > 7) return -1;
     return map[n];
   }
   if (c0 == 'D') {
-    // D0/D1 UART; D2..D12 GPIOs; D13 LED
-    static const int map[] = {
-        1, 3, 2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 23 // D0..D13
-    };
     if (n < 0 || n > 13) return -1;
-    return map[n];
+    return n; // D0..D13
   }
   return -1;
 }
@@ -103,7 +103,13 @@ static void pushRole(NodePinRoleEntry* roles, uint8_t* count, const char* label,
   }
   e->label[i] = '\0';
   e->role = role;
+  e->sensitivityPct = 0;
   e->gpio = boardSilkToGpio(e->label);
+  e->refGpio = -1;
+}
+
+int boardAmbientRefGpio() {
+  return isMegaProfile() ? boardSilkToGpio("A15") : boardSilkToGpio("A7");
 }
 
 void boardLoadDefaultPinRoles(NodePinRoleEntry* roles, uint8_t* count, int* refGpio) {
@@ -159,7 +165,7 @@ void setup() {
   delay(500);
   gLink = &Serial;
 
-#if defined(ESP32)
+#if defined(PANELS_HAVE_BT)
   String btName = String("PanelsDCC-") + BOARD_PREFIX;
   SerialBT.begin(btName);
 #endif
@@ -169,7 +175,7 @@ void setup() {
 
 void loop() {
   nodeEnginePollStream(&Serial);
-#if defined(ESP32)
+#if defined(PANELS_HAVE_BT)
   nodeEnginePollStream(&SerialBT);
   // Prefer BT as reply channel once paired; USB still accepts CFG during flash/configure.
   if (SerialBT.connected()) {

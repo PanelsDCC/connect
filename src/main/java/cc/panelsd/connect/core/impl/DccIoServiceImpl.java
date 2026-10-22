@@ -374,6 +374,25 @@ public final class DccIoServiceImpl implements DccIoService {
         }
     }
 
+    /** Keep a flashed prefix and board type when the live probe could not see the boot banner. */
+    private void fillIdentityFromInventory(DeviceDiscoveryService.DetectedDevice device) {
+        if (device.config == null) {
+            device.config = new java.util.HashMap<>();
+        }
+        NodeInventory.NodeRecord known = nodeInventory.findByEndpoint(device.port);
+        if (known == null) {
+            return;
+        }
+        if ((device.config.get("boardPrefix") == null || device.config.get("boardPrefix").isBlank())
+                && known.prefix != null) {
+            device.config.put("boardPrefix", known.prefix);
+        }
+        if ((device.config.get("boardType") == null || device.config.get("boardType").isBlank())
+                && known.boardType != null) {
+            device.config.put("boardType", known.boardType);
+        }
+    }
+
     private void startSensorBoard(DeviceDiscoveryService.DetectedDevice device) {
         String sessionId = "sensor_" + device.port.replace("/", "_").replace("\\", "_");
         if (sensorSessions.containsKey(sessionId)) {
@@ -381,6 +400,7 @@ public final class DccIoServiceImpl implements DccIoService {
             portToConnectionId.put(device.port, sessionId);
             return;
         }
+        fillIdentityFromInventory(device);
         String prefix = device.config.get("boardPrefix");
         String boardType = BoardProfile.normalize(device.config.get("boardType"));
         SensorBoardSession session = new SensorBoardSession(
@@ -864,6 +884,13 @@ public final class DccIoServiceImpl implements DccIoService {
         if (held.prefix != null) {
             device.config.put("boardPrefix", held.prefix);
         }
+        NodeInventory.NodeRecord known = nodeInventory.findById(sessionId);
+        if (known == null && held.prefix != null) {
+            known = nodeInventory.findByPrefix(held.prefix);
+        }
+        if (known != null && known.boardType != null) {
+            device.config.put("boardType", known.boardType);
+        }
         // Prefer live probe to refresh prefix
         UsbSerialProbe.ProbeResult result = usbProbe.verifySensorBoard(bare);
         if (result.type == UsbSerialProbe.DeviceType.SENSOR_BOARD) {
@@ -896,12 +923,19 @@ public final class DccIoServiceImpl implements DccIoService {
                     prev.id, bare, prefix != null ? prefix : prev.prefix, prev.byPath));
         }
 
+        NodeInventory.NodeRecord previous = nodeInventory.findById(sessionId);
         NodeInventory.NodeRecord rec = new NodeInventory.NodeRecord();
         rec.id = sessionId;
         rec.prefix = SensorBoardSupport.normalizePrefix(prefix);
         rec.boardType = type;
         rec.transport = SensorBoardSupport.TRANSPORT_USB;
         rec.endpoint = bare;
+        if (previous != null) {
+            rec.pins = previous.pins;
+            rec.outputs = previous.outputs;
+            rec.opticalDistricts = previous.opticalDistricts;
+            rec.config = previous.config;
+        }
         nodeInventory.upsert(rec);
 
         return sensorFlasher.startFlash(bare, prefix, type, success -> {

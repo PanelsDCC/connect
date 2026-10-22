@@ -47,6 +47,19 @@ public final class NodeInventory {
         return List.copyOf(nodes);
     }
 
+    public NodeRecord findByEndpoint(String endpoint) {
+        String bare = SensorBoardSupport.barePort(endpoint);
+        if (bare == null || bare.isEmpty()) {
+            return null;
+        }
+        for (NodeRecord r : nodes) {
+            if (bare.equals(SensorBoardSupport.barePort(r.endpoint))) {
+                return r;
+            }
+        }
+        return null;
+    }
+
     public NodeRecord findByPrefix(String prefix) {
         String n = SensorBoardSupport.normalizePrefix(prefix);
         for (NodeRecord r : nodes) {

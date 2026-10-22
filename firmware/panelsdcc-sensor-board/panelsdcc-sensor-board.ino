@@ -32,6 +32,8 @@ int boardSilkToGpio(const char* silk) {
   return -1;
 }
 
+int boardAmbientRefGpio() { return A7; }
+
 void boardLoadDefaultPinRoles(NodePinRoleEntry* roles, uint8_t* count, int* refGpio) {
   *count = 0;
   *refGpio = A7;
@@ -41,7 +43,9 @@ void boardLoadDefaultPinRoles(NodePinRoleEntry* roles, uint8_t* count, int* refG
     e->label[1] = (char)('0' + i);
     e->label[2] = '\0';
     e->role = ROLE_OPTICAL;
+    e->sensitivityPct = 0;
     e->gpio = A0 + i;
+    e->refGpio = -1;
   }
   for (int d = 2; d <= 12 && *count < NODE_MAX_PIN_ROLES; d++) {
     NodePinRoleEntry* e = &roles[(*count)++];
@@ -55,7 +59,9 @@ void boardLoadDefaultPinRoles(NodePinRoleEntry* roles, uint8_t* count, int* refG
       e->label[3] = '\0';
     }
     e->role = ROLE_DIGITAL_IN;
+    e->sensitivityPct = 0;
     e->gpio = d;
+    e->refGpio = -1;
   }
 }
 

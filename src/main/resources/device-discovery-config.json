@@ -85,6 +85,19 @@
       "descriptionPatterns": ["dcc++", "dccpp", "arduino"]
     },
     {
+      "name": "Arduino Nano ESP32",
+      "vendorId": "0x2341",
+      "productId": "0x0070",
+      "systemType": "usb-serial-candidate",
+      "needsProbe": true,
+      "defaultPort": null,
+      "config": {
+        "baudRate": "9600",
+        "boardType": "nano-esp32"
+      },
+      "descriptionPatterns": ["nano esp32"]
+    },
+    {
       "name": "USB Serial (CH340)",
       "vendorId": "0x1a86",
       "productId": "0x7523",
