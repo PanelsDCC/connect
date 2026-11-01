@@ -236,7 +236,8 @@ public final class NodeOutputMirror {
             }
             for (OutputMirror o : outputs) {
                 for (int i = 0; i < o.pins.size(); i++) {
-                    if (pin.equals(o.pins.get(i))) {
+                    String outPin = o.pins.get(i);
+                    if (outPin != null && pin.equalsIgnoreCase(outPin.trim())) {
                         o.applyManualServo(i, deg);
                     }
                 }

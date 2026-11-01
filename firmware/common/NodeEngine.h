@@ -6,8 +6,14 @@
 
 #include <Arduino.h>
 #include <Servo.h>
+#include "NodeLimits.h"
+#if defined(NODE_BAKED_CONFIG)
+#include <avr/pgmspace.h>
+#endif
 
-/* Limits: Nano AVR has 2KB SRAM / 1KB EEPROM — keep tight there. */
+/* Limits: Nano AVR has 2KB SRAM / 1KB EEPROM — keep tight there.
+   A baked Nano image raises these in NodeLimits.h. The link fails
+   when that image does not fit, which is the real cap. */
 #if defined(__AVR_ATmega328P__) || defined(__AVR_ATmega168__)
 /* 328P has 2KB SRAM. These caps leave room for the stack.
    CFG JSON must stay within NODE_MAX_CFG (one serial line). */
@@ -102,15 +108,22 @@ enum LcPhase : uint8_t {
   LC_CLEARING
 };
 
-struct NodePinRoleEntry {
+/* Immutable pin description. A baked Nano image stores these in program space. */
+struct NodePinConfig {
   char label[5]; // "D22", "A15"
   NodePinRole role;
   uint8_t sensitivityPct; // optical district; 0 = default
-  bool reportedActive;
   int gpio;
   int refGpio; // optical: district reference pin, else -1
+};
+
+/* Changes while the node runs. Always in SRAM. */
+struct NodePinRuntime {
+  bool reportedActive;
   unsigned long clearSinceMs;
 };
+
+typedef NodePinConfig NodePinRoleEntry;
 
 struct NodeSensor {
   char label[5];
@@ -135,15 +148,14 @@ struct NodeTrigger {
   bool hasBrightness;
 };
 
-struct NodeOutput {
+/* Immutable output description. A baked Nano image stores these in program space. */
+struct NodeOutputConfig {
   NodeOutType type;
   uint8_t pinCount;
   int gpio[NODE_MAX_OUT_PINS];
   char pinLabel[NODE_MAX_OUT_PINS][5];
-  int8_t servoIx[NODE_MAX_OUT_PINS]; // -1 if unused
   uint8_t triggerCount;
   NodeTrigger triggers[NODE_MAX_TRIGGERS];
-  // params
   int pulseMs;
   int onMs;
   int offMs;
@@ -156,8 +168,12 @@ struct NodeOutput {
   int barrierOpenDeg;
   int barrierClosedDeg;
   int flashMs;
-  // runtime
-  bool active; // blinking / on / pulse running / etc
+};
+
+/* Changes while the node runs. Always in SRAM, independent of trigger count. */
+struct NodeOutputRuntime {
+  int8_t servoIx[NODE_MAX_OUT_PINS]; // -1 if unused
+  bool active;
   bool phaseHigh;
   unsigned long nextToggleMs;
   unsigned long pulseUntilMs;
@@ -180,7 +196,27 @@ struct NodeOutput {
 int boardSilkToGpio(const char* silk);
 
 /** Fill default optical/digital_in roles when EEPROM empty / CFG has no pins. */
-void boardLoadDefaultPinRoles(NodePinRoleEntry* roles, uint8_t* count, int* refGpio);
+void boardLoadDefaultPinRoles(NodePinConfig* roles, uint8_t* count, int* refGpio);
+
+#if defined(NODE_BAKED_CONFIG)
+/* Names and Connect-only fields. Program storage, beside the pin and output tables. */
+struct NodeBakedMeta {
+  char districtName[NODE_MAX_DISTRICTS][41];
+  char outputName[NODE_MAX_OUTPUTS][49];
+  char pinName[NODE_MAX_OUTPUTS][NODE_MAX_OUT_PINS][25];
+  char triggerLabel[NODE_MAX_OUTPUTS][NODE_MAX_TRIGGERS][41];
+  char feedbackVirtual[NODE_MAX_OUTPUTS][8];
+  int feedbackActiveState[NODE_MAX_OUTPUTS];
+};
+
+/* Generated sketch. These tables are in program storage. */
+extern const NodePinConfig gBakedPins[] PROGMEM;
+extern const uint8_t gBakedPinCount;
+extern const int gBakedRefGpio;
+extern const NodeOutputConfig gBakedOutputs[] PROGMEM;
+extern const uint8_t gBakedOutputCount;
+extern const NodeBakedMeta gBakedMeta PROGMEM;
+#endif
 
 /** Ambient reference pin used when a district does not name one (A7 / A15). */
 int boardAmbientRefGpio();
@@ -211,5 +247,9 @@ void nodeEngineTick();
 /** Persist / apply helpers exposed for tests if needed. */
 bool nodeApplyCfgJson(const char* json);
 void nodeReplyCfg();
-/** `ID?` → `ID {prefix} {boardType}`. Prefix is the PREFIX override when stored. */
+/** Wipe stored CFG (EEPROM/NVS); leave PREFIX. Reloads default pin roles. */
+void nodeClearCfg();
+/** `ID?` → `ID {prefix} {boardType} {imageVersion}`. Prefix is the PREFIX override when stored. */
 void nodeReplyId();
+/** Catalog / build image version baked as IMAGE_VERSION_STR (e.g. "2026-10-27"). */
+const char* nodeImageVersion();

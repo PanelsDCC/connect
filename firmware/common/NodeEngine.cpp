@@ -1,10 +1,23 @@
 #include "NodeEngine.h"
+#if defined(__has_include)
+#  if __has_include("ImageVersion.h")
+#    include "ImageVersion.h"
+#  endif
+#endif
+#ifndef IMAGE_VERSION_STR
+#define IMAGE_VERSION_STR "1970-01-01"
+#endif
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stddef.h>
 
 #if defined(ESP32)
 #include <Preferences.h>
+#include <esp_system.h>
+#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2)
+#include "soc/rtc_cntl_reg.h"
+#endif
 static Preferences gPrefs;
 #else
 #include <EEPROM.h>
@@ -12,17 +25,21 @@ static Preferences gPrefs;
 #endif
 
 // ---- globals ----
-// CFG JSON is persisted to EEPROM/NVS; not kept in RAM (Nano SRAM budget).
+// A baked Nano image keeps pin and output configuration in program storage.
+// These arrays are only the values that change while the node is running.
 static uint16_t gCfgLen = 0;
 static bool gCfgValid = false;
 static char gLine[NODE_MAX_LINE];
 static uint16_t gLineLen = 0;
 
-static NodePinRoleEntry gRoles[NODE_MAX_PIN_ROLES];
+#if !defined(NODE_BAKED_CONFIG)
+static NodePinConfig gPinCfg[NODE_MAX_PIN_ROLES];
+static NodeOutputConfig gOutCfg[NODE_MAX_OUTPUTS];
+#endif
+static NodePinRuntime gPinRt[NODE_MAX_PIN_ROLES];
 static uint8_t gRoleCount = 0;
 static int gRefGpio = -1;
-
-static NodeOutput gOutputs[NODE_MAX_OUTPUTS];
+static NodeOutputRuntime gOutRt[NODE_MAX_OUTPUTS];
 static uint8_t gOutputCount = 0;
 
 static Servo gServos[NODE_MAX_SERVOS];
@@ -388,6 +405,11 @@ static void detachAllServos() {
   gServoCount = 0;
 }
 
+/** Angles preserved across CFG rebuild so editing a position does not slam servos to 0°. */
+static int gSnapGpio[NODE_MAX_SERVOS];
+static int gSnapDeg[NODE_MAX_SERVOS];
+static uint8_t gSnapCount = 0;
+
 // ---- persist (JSON body only; parse buffer is caller-provided) ----
 static bool loadCfgIntoBuffer(char* buf, size_t cap, uint16_t* outLen) {
   *outLen = 0;
@@ -451,19 +473,251 @@ static void saveCfgToStorage(const char* json, uint16_t len) {
   gCfgValid = true;
 }
 
-// ---- pin / sensor rebuild ----
+static void clearCfgStorage() {
+#if defined(ESP32)
+  if (!gPrefs.begin("panelsdcc", false)) return;
+  gPrefs.remove("cfg");
+  gPrefs.end();
+#else
+  EEPROM.update(0, 0);
+  EEPROM.update(1, 0);
+  EEPROM.update(2, 0);
+  EEPROM.update(3, 0);
+#endif
+  gCfgLen = 0;
+  gCfgValid = false;
+}
+
+const char* nodeImageVersion() {
+  return IMAGE_VERSION_STR;
+}
+
+// ---- configuration access ----
+// Baked images read these fields from program storage. Generic images read SRAM copies
+// that the CFG parser fills. Callers never copy a whole output (the trigger list is large).
+
+static int outInt(uint8_t i, size_t off) {
+  int v = 0;
+#if defined(NODE_BAKED_CONFIG)
+  memcpy_P(&v, ((const uint8_t*)&gBakedOutputs[i]) + off, sizeof(v));
+#else
+  memcpy(&v, ((const uint8_t*)&gOutCfg[i]) + off, sizeof(v));
+#endif
+  return v;
+}
+
+static NodePinRole pinRoleAt(uint8_t i) {
+#if defined(NODE_BAKED_CONFIG)
+  return (NodePinRole)pgm_read_byte(&gBakedPins[i].role);
+#else
+  return gPinCfg[i].role;
+#endif
+}
+
+static uint8_t pinPctAt(uint8_t i) {
+#if defined(NODE_BAKED_CONFIG)
+  return pgm_read_byte(&gBakedPins[i].sensitivityPct);
+#else
+  return gPinCfg[i].sensitivityPct;
+#endif
+}
+
+static int pinGpioAt(uint8_t i) {
+  int v = 0;
+#if defined(NODE_BAKED_CONFIG)
+  memcpy_P(&v, &gBakedPins[i].gpio, sizeof(v));
+#else
+  v = gPinCfg[i].gpio;
+#endif
+  return v;
+}
+
+static int pinRefAt(uint8_t i) {
+  int v = 0;
+#if defined(NODE_BAKED_CONFIG)
+  memcpy_P(&v, &gBakedPins[i].refGpio, sizeof(v));
+#else
+  v = gPinCfg[i].refGpio;
+#endif
+  return v;
+}
+
+static void pinLabelAt(uint8_t i, char* dest) {
+#if defined(NODE_BAKED_CONFIG)
+  memcpy_P(dest, gBakedPins[i].label, 5);
+#else
+  memcpy(dest, gPinCfg[i].label, 5);
+#endif
+  dest[4] = '\0';
+}
+
+static NodeOutType outTypeAt(uint8_t i) {
+#if defined(NODE_BAKED_CONFIG)
+  return (NodeOutType)pgm_read_byte(&gBakedOutputs[i].type);
+#else
+  return gOutCfg[i].type;
+#endif
+}
+
+static uint8_t outPinCountAt(uint8_t i) {
+#if defined(NODE_BAKED_CONFIG)
+  return pgm_read_byte(&gBakedOutputs[i].pinCount);
+#else
+  return gOutCfg[i].pinCount;
+#endif
+}
+
+static uint8_t outTrigCountAt(uint8_t i) {
+#if defined(NODE_BAKED_CONFIG)
+  return pgm_read_byte(&gBakedOutputs[i].triggerCount);
+#else
+  return gOutCfg[i].triggerCount;
+#endif
+}
+
+static int outGpioAt(uint8_t i, uint8_t p) {
+  return outInt(i, offsetof(NodeOutputConfig, gpio) + (size_t)p * sizeof(int));
+}
+
+static void outTrigAt(uint8_t i, uint8_t t, NodeTrigger* dest) {
+#if defined(NODE_BAKED_CONFIG)
+  memcpy_P(dest, &gBakedOutputs[i].triggers[t], sizeof(NodeTrigger));
+#else
+  *dest = gOutCfg[i].triggers[t];
+#endif
+}
+
+#define OI(i, field) outInt((i), offsetof(NodeOutputConfig, field))
+
+static void snapshotServoAngles() {
+  gSnapCount = 0;
+  for (uint8_t i = 0; i < gOutputCount && gSnapCount < NODE_MAX_SERVOS; i++) {
+    NodeOutType type = outTypeAt(i);
+    if (type != OUT_SERVO && type != OUT_LEVEL_CROSSING) continue;
+    uint8_t n = outPinCountAt(i);
+    uint8_t j0 = (type == OUT_LEVEL_CROSSING) ? 3 : 0;
+    for (uint8_t j = j0; j < n && gSnapCount < NODE_MAX_SERVOS; j++) {
+      if (gOutRt[i].servoIx[j] < 0) continue;
+      int g = outGpioAt(i, j);
+      if (g < 0) continue;
+      gSnapGpio[gSnapCount] = g;
+      gSnapDeg[gSnapCount] = gOutRt[i].currentDeg;
+      gSnapCount++;
+    }
+  }
+}
+
+static int snappedDegForGpio(int gpio) {
+  for (uint8_t i = 0; i < gSnapCount; i++) {
+    if (gSnapGpio[i] == gpio) return gSnapDeg[i];
+  }
+  return -1;
+}
+
+/** Hold a servo at deg so tickOutputs does not animate it away. */
+static void holdServoOutput(uint8_t oi, int deg) {
+  if (deg < 0) deg = 0;
+  if (deg > 180) deg = 180;
+  NodeOutputRuntime* r = &gOutRt[oi];
+  r->currentDeg = deg;
+  r->targetDeg = deg;
+  r->fadeFromBright = deg;
+  r->fadeStartMs = millis();
+  r->active = false;
+}
+
 static void clearRuntime() {
   detachAllServos();
   gRoleCount = 0;
   gOutputCount = 0;
   gRefGpio = -1;
-  memset(gOutputs, 0, sizeof(gOutputs));
-  memset(gRoles, 0, sizeof(gRoles));
+  memset(gPinRt, 0, sizeof(gPinRt));
+  memset(gOutRt, 0, sizeof(gOutRt));
+  for (uint8_t i = 0; i < NODE_MAX_OUTPUTS; i++) {
+    for (uint8_t p = 0; p < NODE_MAX_OUT_PINS; p++) gOutRt[i].servoIx[p] = -1;
+  }
+#if !defined(NODE_BAKED_CONFIG)
+  memset(gPinCfg, 0, sizeof(gPinCfg));
+  memset(gOutCfg, 0, sizeof(gOutCfg));
+#endif
 }
 
-static NodePinRoleEntry* findRoleByLabel(const char* silk) {
+static bool roleIsSensorAt(uint8_t i) {
+  NodePinRole role = pinRoleAt(i);
+  return role == ROLE_OPTICAL || role == ROLE_DIGITAL_IN;
+}
+
+static bool opticalActiveAt(uint8_t i) {
+  if (pinRoleAt(i) != ROLE_OPTICAL) return false;
+  int gpio = pinGpioAt(i);
+  if (gpio < 0) return false;
+  int refPin = pinRefAt(i);
+  int refGpio = refPin >= 0 ? refPin : gRefGpio;
+  int ref = (refGpio >= 0) ? analogRead(refGpio) : 0;
+  int val = analogRead(gpio);
+  int delta = val - ref;
+  if (delta <= 0) return false;
+  uint8_t pct = pinPctAt(i);
+  if (!pct) pct = NODE_DEFAULT_SENSITIVITY_PCT;
+  long need = ((long)ref * (long)pct) / 100L;
+  if (need < 1) need = 1;
+  return delta > (int)need;
+}
+
+static void applySensorPinModes() {
   for (uint8_t i = 0; i < gRoleCount; i++) {
-    if (streqi(gRoles[i].label, silk)) return &gRoles[i];
+    if (pinRoleAt(i) == ROLE_DIGITAL_IN) {
+      int gpio = pinGpioAt(i);
+      if (gpio >= 0) pinMode(gpio, INPUT_PULLUP);
+    }
+  }
+}
+
+static void applyOutputPinModes(uint8_t oi) {
+  NodeOutputRuntime* r = &gOutRt[oi];
+  NodeOutType type = outTypeAt(oi);
+  uint8_t n = outPinCountAt(oi);
+  for (uint8_t i = 0; i < n; i++) {
+    int g = outGpioAt(oi, i);
+    if (g < 0) continue;
+    if (type == OUT_SERVO || (type == OUT_LEVEL_CROSSING && i >= 3)) {
+      r->servoIx[i] = allocServo(g);
+    } else {
+      pinMode(g, OUTPUT);
+      writeDigital(g, false);
+      r->servoIx[i] = -1;
+    }
+  }
+}
+
+static void finishOutput(uint8_t oi) {
+  NodeOutputRuntime* r = &gOutRt[oi];
+  applyOutputPinModes(oi);
+  if (outTypeAt(oi) == OUT_SERVO) {
+    int g = outGpioAt(oi, 0);
+    int deg = snappedDegForGpio(g);
+    if (deg < 0) deg = 90;
+    holdServoOutput(oi, deg);
+    if (r->servoIx[0] >= 0) writeServoDeg(r->servoIx[0], deg);
+  } else if (outTypeAt(oi) == OUT_LEVEL_CROSSING) {
+    int openDeg = OI(oi, barrierOpenDeg);
+    int g = outGpioAt(oi, 3);
+    int snap = snappedDegForGpio(g);
+    int deg = snap >= 0 ? snap : openDeg;
+    r->lcPhase = LC_IDLE_OPEN;
+    holdServoOutput(oi, deg);
+    uint8_t n = outPinCountAt(oi);
+    for (uint8_t i = 3; i < n && i < 5; i++) {
+      if (r->servoIx[i] >= 0) writeServoDeg(r->servoIx[i], deg);
+    }
+  }
+}
+
+#if !defined(NODE_BAKED_CONFIG)
+
+static NodePinConfig* findRoleByLabel(const char* silk) {
+  for (uint8_t i = 0; i < gRoleCount; i++) {
+    if (streqi(gPinCfg[i].label, silk)) return &gPinCfg[i];
   }
   return nullptr;
 }
@@ -471,29 +725,12 @@ static NodePinRoleEntry* findRoleByLabel(const char* silk) {
 static void addOpticalMeta(const char* label, int refGpio, uint8_t pct) {
   char silk[5];
   normalizeSilk(silk, sizeof(silk), label);
-  NodePinRoleEntry* r = findRoleByLabel(silk);
+  NodePinConfig* r = findRoleByLabel(silk);
   if (!r) return;
   if (pct < 1) pct = NODE_DEFAULT_SENSITIVITY_PCT;
   if (pct > 100) pct = 100;
   r->sensitivityPct = pct;
   r->refGpio = refGpio;
-}
-
-static bool roleIsSensor(const NodePinRoleEntry* e) {
-  return e->role == ROLE_OPTICAL || e->role == ROLE_DIGITAL_IN;
-}
-
-static bool opticalActive(const NodePinRoleEntry* sens) {
-  if (sens->role != ROLE_OPTICAL || sens->gpio < 0) return false;
-  int refGpio = sens->refGpio >= 0 ? sens->refGpio : gRefGpio;
-  int ref = (refGpio >= 0) ? analogRead(refGpio) : 0;
-  int val = analogRead(sens->gpio);
-  int delta = val - ref;
-  if (delta <= 0) return false;
-  uint8_t pct = sens->sensitivityPct ? sens->sensitivityPct : NODE_DEFAULT_SENSITIVITY_PCT;
-  long need = ((long)ref * (long)pct) / 100L;
-  if (need < 1) need = 1;
-  return delta > (int)need;
 }
 
 static void addRole(const char* label, NodePinRole role) {
@@ -502,41 +739,20 @@ static void addRole(const char* label, NodePinRole role) {
   normalizeSilk(silk, sizeof(silk), label);
   int gpio = boardSilkToGpio(silk);
   if (gpio < 0 && role != ROLE_FREE) return;
-  NodePinRoleEntry* e = &gRoles[gRoleCount++];
+  NodePinConfig* e = &gPinCfg[gRoleCount];
+  NodePinRuntime* rt = &gPinRt[gRoleCount];
+  gRoleCount++;
   strCopyCap(e->label, sizeof(e->label), silk);
   e->role = role;
   e->sensitivityPct = 0;
-  e->reportedActive = false;
   e->gpio = gpio;
   e->refGpio = -1;
-  e->clearSinceMs = 0;
+  rt->reportedActive = false;
+  rt->clearSinceMs = 0;
   if (role == ROLE_REF) gRefGpio = gpio;
 }
 
-static void applySensorPinModes() {
-  for (uint8_t i = 0; i < gRoleCount; i++) {
-    NodePinRoleEntry* e = &gRoles[i];
-    if (e->role == ROLE_DIGITAL_IN && e->gpio >= 0) {
-      pinMode(e->gpio, INPUT_PULLUP);
-    }
-  }
-}
-
-static void applyOutputPinModes(NodeOutput* o) {
-  for (uint8_t i = 0; i < o->pinCount; i++) {
-    int g = o->gpio[i];
-    if (g < 0) continue;
-    if (o->type == OUT_SERVO || (o->type == OUT_LEVEL_CROSSING && i >= 3)) {
-      o->servoIx[i] = allocServo(g);
-    } else {
-      pinMode(g, OUTPUT);
-      writeDigital(g, false);
-      o->servoIx[i] = -1;
-    }
-  }
-}
-
-static void parseParams(NodeOutput* o, const char* paramsObj) {
+static void parseParams(NodeOutputConfig* o, const char* paramsObj) {
   o->pulseMs = 250;
   o->onMs = 500;
   o->offMs = 500;
@@ -566,7 +782,7 @@ static void parseParams(NodeOutput* o, const char* paramsObj) {
   if ((v = findKey(paramsObj, "flashMs")) && parseIntVal(v, &n)) o->flashMs = n;
 }
 
-static void parseTriggerArray(NodeOutput* o, const char* arr) {
+static void parseTriggerArray(NodeOutputConfig* o, const char* arr) {
   o->triggerCount = 0;
   arr = skipWs(arr);
   if (!arr || *arr != '[') return;
@@ -602,7 +818,6 @@ static void parseTriggerArray(NodeOutput* o, const char* arr) {
       t->brightness = n;
       t->hasBrightness = true;
     }
-    // digital_signal on / flashing arrays of pin indices
     if ((v = findKey(p, "on")) && *skipWs(v) == '[') {
       const char* a = skipWs(v) + 1;
       while (*a && *a != ']') {
@@ -675,15 +890,16 @@ static void parseOutputsArray(const char* arr) {
       if (*p == ',') p++;
       continue;
     }
-    NodeOutput* o = &gOutputs[gOutputCount];
+    NodeOutputConfig* o = &gOutCfg[gOutputCount];
+    NodeOutputRuntime* rt = &gOutRt[gOutputCount];
     memset(o, 0, sizeof(*o));
-    for (uint8_t i = 0; i < NODE_MAX_OUT_PINS; i++) o->servoIx[i] = -1;
+    memset(rt, 0, sizeof(*rt));
+    for (uint8_t i = 0; i < NODE_MAX_OUT_PINS; i++) rt->servoIx[i] = -1;
     char typeBuf[24] = {0};
     const char* v;
     if ((v = findKey(p, "type"))) parseStringVal(v, typeBuf, sizeof(typeBuf));
     o->type = parseOutType(typeBuf);
     parseParams(o, findKey(p, "params"));
-    // pins: ["D9","D10"]
     if ((v = findKey(p, "pins")) && *skipWs(v) == '[') {
       const char* a = skipWs(v) + 1;
       while (*a && *a != ']' && o->pinCount < NODE_MAX_OUT_PINS) {
@@ -703,7 +919,6 @@ static void parseOutputsArray(const char* arr) {
       }
     }
     parseTriggerArray(o, findKey(p, "triggers"));
-    // legacy single dcc
     if (o->triggerCount == 0) {
       int dcc = 0;
       if ((v = findKey(p, "dcc")) && parseIntVal(v, &dcc) && dcc > 0) {
@@ -717,17 +932,27 @@ static void parseOutputsArray(const char* arr) {
       }
     }
     if (o->type != OUT_UNKNOWN && o->pinCount > 0) {
-      applyOutputPinModes(o);
+      applyOutputPinModes(gOutputCount);
       if (o->type == OUT_SERVO) {
-        o->currentDeg = 0;
-        o->targetDeg = 0;
-        if (o->servoIx[0] >= 0) writeServoDeg(o->servoIx[0], o->currentDeg);
+        int deg = snappedDegForGpio(o->gpio[0]);
+        if (deg < 0) {
+          deg = 90;
+          for (uint8_t ti = 0; ti < o->triggerCount; ti++) {
+            if (o->triggers[ti].hasDeg) {
+              deg = o->triggers[ti].deg;
+              break;
+            }
+          }
+        }
+        holdServoOutput(gOutputCount, deg);
+        if (rt->servoIx[0] >= 0) writeServoDeg(rt->servoIx[0], deg);
       } else if (o->type == OUT_LEVEL_CROSSING) {
-        o->lcPhase = LC_IDLE_OPEN;
-        o->currentDeg = o->barrierOpenDeg;
-        o->targetDeg = o->barrierOpenDeg;
+        int snap = o->pinCount > 3 ? snappedDegForGpio(o->gpio[3]) : -1;
+        int deg = snap >= 0 ? snap : o->barrierOpenDeg;
+        rt->lcPhase = LC_IDLE_OPEN;
+        holdServoOutput(gOutputCount, deg);
         for (uint8_t i = 3; i < o->pinCount && i < 5; i++) {
-          if (o->servoIx[i] >= 0) writeServoDeg(o->servoIx[i], o->barrierOpenDeg);
+          if (rt->servoIx[i] >= 0) writeServoDeg(rt->servoIx[i], deg);
         }
       }
       gOutputCount++;
@@ -738,7 +963,6 @@ static void parseOutputsArray(const char* arr) {
   }
 }
 
-/** Returns true if at least one district with a ref was applied. */
 static bool parseOpticalDistricts(const char* arr) {
   arr = skipWs(arr);
   if (!arr || *arr != '[') return false;
@@ -771,9 +995,7 @@ static bool parseOpticalDistricts(const char* arr) {
     normalizeSilk(refNorm, sizeof(refNorm), refLab);
     int refGpio = boardSilkToGpio(refNorm);
     addRole(refNorm, ROLE_REF);
-    if (refGpio >= 0) {
-      gRefGpio = refGpio; // last district ref as fallback
-    }
+    if (refGpio >= 0) gRefGpio = refGpio;
     if ((v = findKey(p, "sensors")) && *skipWs(v) == '[') {
       const char* a = skipWs(v) + 1;
       while (*a && *a != ']') {
@@ -807,8 +1029,11 @@ static bool parseOpticalDistricts(const char* arr) {
 static void stripOpticalAndRefRoles() {
   uint8_t w = 0;
   for (uint8_t i = 0; i < gRoleCount; i++) {
-    if (gRoles[i].role == ROLE_OPTICAL || gRoles[i].role == ROLE_REF) continue;
-    if (w != i) gRoles[w] = gRoles[i];
+    if (gPinCfg[i].role == ROLE_OPTICAL || gPinCfg[i].role == ROLE_REF) continue;
+    if (w != i) {
+      gPinCfg[w] = gPinCfg[i];
+      gPinRt[w] = gPinRt[i];
+    }
     w++;
   }
   gRoleCount = w;
@@ -816,9 +1041,10 @@ static void stripOpticalAndRefRoles() {
 }
 
 static void rebuildFromCfgBuffer(const char* json) {
+  snapshotServoAngles();
   clearRuntime();
   if (!json || !json[0]) {
-    boardLoadDefaultPinRoles(gRoles, &gRoleCount, &gRefGpio);
+    boardLoadDefaultPinRoles(gPinCfg, &gRoleCount, &gRefGpio);
     applySensorPinModes();
     return;
   }
@@ -827,7 +1053,7 @@ static void rebuildFromCfgBuffer(const char* json) {
   if (pins && *skipWs(pins) == '[') {
     parsePinsArray(pins);
   } else {
-    boardLoadDefaultPinRoles(gRoles, &gRoleCount, &gRefGpio);
+    boardLoadDefaultPinRoles(gPinCfg, &gRoleCount, &gRefGpio);
   }
 
   const char* districts = findKey(root, "opticalDistricts");
@@ -836,26 +1062,23 @@ static void rebuildFromCfgBuffer(const char* json) {
     const char* after = skipWs(skipWs(districts) + 1);
     bool emptyArr = after && *after == ']';
     if (!emptyArr) {
-      // Prefer districts for optical/ref; keep digital_in/output from pins
       stripOpticalAndRefRoles();
       usedDistricts = parseOpticalDistricts(districts);
     }
   }
 
   if (!usedDistricts) {
-    // Ensure ambient ref if optical sensors present
     if (gRefGpio < 0) {
       for (uint8_t i = 0; i < gRoleCount; i++) {
-        if (gRoles[i].role == ROLE_OPTICAL) {
+        if (gPinCfg[i].role == ROLE_OPTICAL) {
           gRefGpio = boardAmbientRefGpio();
           break;
         }
       }
     }
-    // Default meta: all optical share board ref at 15%
     for (uint8_t i = 0; i < gRoleCount; i++) {
-      if (gRoles[i].role == ROLE_OPTICAL) {
-        addOpticalMeta(gRoles[i].label, gRefGpio, NODE_DEFAULT_SENSITIVITY_PCT);
+      if (gPinCfg[i].role == ROLE_OPTICAL) {
+        addOpticalMeta(gPinCfg[i].label, gRefGpio, NODE_DEFAULT_SENSITIVITY_PCT);
       }
     }
   }
@@ -865,29 +1088,286 @@ static void rebuildFromCfgBuffer(const char* json) {
   if (outs) parseOutputsArray(outs);
 }
 
+#endif
+
 bool nodeApplyCfgJson(const char* json) {
+#if defined(NODE_BAKED_CONFIG)
+  (void)json;
+  return false;
+#else
   if (!json) return false;
-  // Skip leading whitespace
   while (*json == ' ' || *json == '\t') json++;
   size_t n = strlen(json);
   if (n == 0 || n >= NODE_MAX_CFG || n + 1 > NODE_MAX_LINE) return false;
-  // Parse from the live buffer (usually gLine+4); copy only if needed for persist.
   rebuildFromCfgBuffer(json);
   saveCfgToStorage(json, (uint16_t)n);
   return true;
+#endif
 }
+
+#if defined(NODE_BAKED_CONFIG)
+
+static void printFlashJson(Stream* s, const char* flash, uint8_t cap) {
+  s->print('"');
+  for (uint8_t i = 0; i < cap; i++) {
+    char c = (char)pgm_read_byte(flash + i);
+    if (c == '\0') break;
+    if (c == '"' || c == '\\') s->print('\\');
+    s->print(c);
+  }
+  s->print('"');
+}
+
+static bool flashBlank(const char* flash) {
+  return pgm_read_byte(flash) == 0;
+}
+
+static void printSilkJson(Stream* s, const char* ram) {
+  s->print('"');
+  s->print(ram);
+  s->print('"');
+}
+
+static void printIntField(Stream* s, bool* first, const __FlashStringHelper* key, int value) {
+  if (!*first) s->print(',');
+  *first = false;
+  s->print('"');
+  s->print(key);
+  s->print(F("\":"));
+  s->print(value);
+}
+
+static void printOutType(Stream* s, NodeOutType type) {
+  switch (type) {
+    case OUT_ON_OFF: s->print(F("on_off")); break;
+    case OUT_PULSE: s->print(F("pulse")); break;
+    case OUT_BLINK: s->print(F("blink")); break;
+    case OUT_ALT_PAIR: s->print(F("alt_pair")); break;
+    case OUT_FADE: s->print(F("fade")); break;
+    case OUT_SERVO: s->print(F("servo")); break;
+    case OUT_LEVEL_CROSSING: s->print(F("level_crossing")); break;
+    case OUT_DIGITAL_SIGNAL: s->print(F("digital_signal")); break;
+    default: s->print(F("unknown")); break;
+  }
+}
+
+static void printRole(Stream* s, NodePinRole role) {
+  switch (role) {
+    case ROLE_OPTICAL: s->print(F("optical")); break;
+    case ROLE_DIGITAL_IN: s->print(F("digital_in")); break;
+    case ROLE_OUTPUT: s->print(F("output")); break;
+    case ROLE_REF: s->print(F("ref")); break;
+    default: s->print(F("free")); break;
+  }
+}
+
+static void printBakedParams(Stream* s, uint8_t oi, NodeOutType type) {
+  bool first = true;
+  if (type == OUT_PULSE) printIntField(s, &first, F("pulseMs"), OI(oi, pulseMs));
+  if (type == OUT_BLINK || type == OUT_ALT_PAIR) {
+    printIntField(s, &first, F("onMs"), OI(oi, onMs));
+    printIntField(s, &first, F("offMs"), OI(oi, offMs));
+  }
+  if (type == OUT_FADE) printIntField(s, &first, F("fadeMs"), OI(oi, fadeMs));
+  if (type == OUT_SERVO) printIntField(s, &first, F("travelMs"), OI(oi, travelMs));
+  if (type == OUT_DIGITAL_SIGNAL) printIntField(s, &first, F("flashMs"), OI(oi, flashMs));
+  if (type == OUT_LEVEL_CROSSING) {
+    printIntField(s, &first, F("warningMs"), OI(oi, warningMs));
+    printIntField(s, &first, F("wigwagOnMs"), OI(oi, wigwagOnMs));
+    printIntField(s, &first, F("wigwagOffMs"), OI(oi, wigwagOffMs));
+    printIntField(s, &first, F("barrierTravelMs"), OI(oi, barrierTravelMs));
+    printIntField(s, &first, F("barrierOpen_deg"), OI(oi, barrierOpenDeg));
+    printIntField(s, &first, F("barrierClosed_deg"), OI(oi, barrierClosedDeg));
+    if (!first) s->print(',');
+    first = false;
+    s->print(F("\"feedbackVirtual\":"));
+    printFlashJson(s, gBakedMeta.feedbackVirtual[oi], 7);
+    int active = 1;
+    memcpy_P(&active, &gBakedMeta.feedbackActiveState[oi], sizeof(active));
+    printIntField(s, &first, F("feedbackActiveState"), active);
+  }
+}
+
+static void printMaskList(Stream* s, uint8_t mask, uint8_t skip, uint8_t n) {
+  s->print('[');
+  bool first = true;
+  uint8_t limit = n < 8 ? n : 8;
+  for (uint8_t i = 0; i < limit; i++) {
+    if ((mask & (1u << i)) == 0) continue;
+    if ((skip & (1u << i)) != 0) continue;
+    if (!first) s->print(',');
+    first = false;
+    s->print((int)i);
+  }
+  s->print(']');
+}
+
+static void printBakedTrigger(Stream* s, uint8_t oi, uint8_t ti, const NodeTrigger* tr, NodeOutType type, uint8_t pinCount) {
+  s->print(F("{\"dcc\":"));
+  s->print(tr->dcc);
+  s->print(F(",\"direction\":"));
+  s->print(tr->wireOn ? F("\"Forward\"") : F("\"Reverse\""));
+  if (!flashBlank(gBakedMeta.triggerLabel[oi][ti])) {
+    s->print(F(",\"label\":"));
+    printFlashJson(s, gBakedMeta.triggerLabel[oi][ti], 40);
+  }
+  if (tr->state[0]) {
+    s->print(F(",\"state\":\""));
+    s->print(tr->state);
+    s->print('"');
+  }
+  if (tr->hasDeg) {
+    s->print(F(",\"deg\":"));
+    s->print(tr->deg);
+  }
+  if (tr->hasBrightness) {
+    s->print(F(",\"brightness\":"));
+    s->print(tr->brightness);
+  }
+  if (type == OUT_DIGITAL_SIGNAL) {
+    s->print(F(",\"on\":"));
+    printMaskList(s, tr->onMask, tr->flashMask, pinCount);
+    s->print(F(",\"flashing\":"));
+    printMaskList(s, tr->flashMask, 0, pinCount);
+  }
+  s->print('}');
+}
+
+static void printBakedOutput(Stream* s, uint8_t oi) {
+  NodeOutType type = outTypeAt(oi);
+  uint8_t n = outPinCountAt(oi);
+  s->print(F("{\"name\":"));
+  if (flashBlank(gBakedMeta.outputName[oi])) {
+    s->print(F("\"Output "));
+    s->print((int)oi + 1);
+    s->print('"');
+  } else {
+    printFlashJson(s, gBakedMeta.outputName[oi], 48);
+  }
+  s->print(F(",\"type\":\""));
+  printOutType(s, type);
+  s->print(F("\",\"pins\":["));
+  for (uint8_t p = 0; p < n; p++) {
+    if (p) s->print(',');
+    char lab[5];
+    memcpy_P(lab, gBakedOutputs[oi].pinLabel[p], 5);
+    lab[4] = '\0';
+    printSilkJson(s, lab);
+  }
+  s->print(']');
+  if (type == OUT_DIGITAL_SIGNAL) {
+    s->print(F(",\"pinNames\":["));
+    for (uint8_t p = 0; p < n; p++) {
+      if (p) s->print(',');
+      printFlashJson(s, gBakedMeta.pinName[oi][p], 24);
+    }
+    s->print(']');
+  }
+  s->print(F(",\"params\":{"));
+  printBakedParams(s, oi, type);
+  s->print(F("},\"triggers\":["));
+  uint8_t tn = outTrigCountAt(oi);
+  for (uint8_t t = 0; t < tn; t++) {
+    if (t) s->print(',');
+    NodeTrigger tr;
+    outTrigAt(oi, t, &tr);
+    printBakedTrigger(s, oi, t, &tr, type, n);
+  }
+  s->print(F("]}"));
+}
+
+static void printBakedCfg(Stream* s) {
+  s->print('{');
+  s->print(F("\"boardType\":\""));
+  const char* type = boardType();
+  if (type) s->print(type);
+  s->print('"');
+
+  s->print(F(",\"pins\":["));
+  for (uint8_t i = 0; i < gRoleCount; i++) {
+    if (i) s->print(',');
+    char lab[5];
+    pinLabelAt(i, lab);
+    s->print(F("{\"label\":"));
+    printSilkJson(s, lab);
+    s->print(F(",\"role\":\""));
+    printRole(s, pinRoleAt(i));
+    s->print(F("\"}"));
+  }
+  s->print(']');
+
+  s->print(F(",\"opticalDistricts\":["));
+  bool firstDistrict = true;
+  uint8_t districtIx = 0;
+  for (uint8_t i = 0; i < gRoleCount; i++) {
+    if (pinRoleAt(i) != ROLE_REF) continue;
+    if (districtIx >= NODE_MAX_DISTRICTS) break;
+    if (!firstDistrict) s->print(',');
+    firstDistrict = false;
+    int refG = pinGpioAt(i);
+    uint8_t pct = 0;
+    for (uint8_t j = 0; j < gRoleCount; j++) {
+      if (pinRoleAt(j) == ROLE_OPTICAL && pinRefAt(j) == refG) {
+        pct = pinPctAt(j);
+        break;
+      }
+    }
+    if (!pct) pct = NODE_DEFAULT_SENSITIVITY_PCT;
+    char refLab[5];
+    pinLabelAt(i, refLab);
+    s->print(F("{\"name\":"));
+    if (flashBlank(gBakedMeta.districtName[districtIx])) {
+      s->print(F("\"District "));
+      s->print((int)districtIx + 1);
+      s->print('"');
+    } else {
+      printFlashJson(s, gBakedMeta.districtName[districtIx], 40);
+    }
+    s->print(F(",\"ref\":"));
+    printSilkJson(s, refLab);
+    s->print(F(",\"sensors\":["));
+    bool firstSensor = true;
+    for (uint8_t j = 0; j < gRoleCount; j++) {
+      if (pinRoleAt(j) != ROLE_OPTICAL || pinRefAt(j) != refG) continue;
+      if (!firstSensor) s->print(',');
+      firstSensor = false;
+      char slab[5];
+      pinLabelAt(j, slab);
+      printSilkJson(s, slab);
+    }
+    s->print(F("],\"sensitivityPct\":"));
+    s->print((int)pct);
+    s->print('}');
+    districtIx++;
+  }
+  s->print(']');
+
+  s->print(F(",\"outputs\":["));
+  for (uint8_t oi = 0; oi < gOutputCount; oi++) {
+    if (oi) s->print(',');
+    printBakedOutput(s, oi);
+  }
+  s->print(F("]}"));
+}
+
+#endif
 
 void nodeReplyCfg() {
   Stream* s = boardLink();
   if (!s) return;
-  s->print("CFG ");
+  s->print(F("CFG "));
+#if defined(NODE_BAKED_CONFIG)
+  printBakedCfg(s);
+  s->println();
+#else
   uint16_t len = 0;
   if (gCfgValid && loadCfgIntoBuffer(gLine, NODE_MAX_LINE, &len) && len > 0) {
     s->println(gLine);
     gLineLen = 0;
   } else {
-    s->println("{}");
+    s->println(F("{}"));
   }
+#endif
 }
 
 void nodeReplyId() {
@@ -898,248 +1378,273 @@ void nodeReplyId() {
   s->print("ID ");
   s->print(prefix ? prefix : "?");
   s->print(' ');
-  s->println(type ? type : "?");
+  s->print(type ? type : "?");
+  s->print(' ');
+  s->println(nodeImageVersion() ? nodeImageVersion() : "0.0.0");
 }
 
-// ---- emit sensors ----
-static void emitSensor(const NodePinRoleEntry* sens, bool active) {
+static void emitSensorAt(uint8_t i, bool active) {
   Stream* s = boardLink();
   if (!s) return;
+  char label[5];
+  pinLabelAt(i, label);
   s->print(nodeEffectivePrefix());
   s->print('-');
-  s->print(sens->label);
+  s->print(label);
   s->println(active ? ": DETECTED" : ": CLEAR");
 }
 
 static void snapshotSensors() {
   unsigned long now = millis();
   for (uint8_t i = 0; i < gRoleCount; i++) {
-    NodePinRoleEntry* sens = &gRoles[i];
-    if (!roleIsSensor(sens)) continue;
-    bool raw = sens->role == ROLE_OPTICAL ? opticalActive(sens) : (digitalRead(sens->gpio) == LOW);
-    sens->reportedActive = raw;
-    sens->clearSinceMs = now;
-    emitSensor(sens, raw);
+    if (!roleIsSensorAt(i)) continue;
+    bool raw = pinRoleAt(i) == ROLE_OPTICAL ? opticalActiveAt(i) : (digitalRead(pinGpioAt(i)) == LOW);
+    gPinRt[i].reportedActive = raw;
+    gPinRt[i].clearSinceMs = now;
+    emitSensorAt(i, raw);
   }
+}
+
+void nodeClearCfg() {
+#if defined(NODE_BAKED_CONFIG)
+  Stream* s = boardLink();
+  if (s) s->println(F("CFG {}"));
+#else
+  clearCfgStorage();
+  clearRuntime();
+  boardLoadDefaultPinRoles(gPinCfg, &gRoleCount, &gRefGpio);
+  applySensorPinModes();
+  snapshotSensors();
+  Stream* s = boardLink();
+  if (s) s->println(F("CFG {}"));
+#endif
 }
 
 static void scanSensors() {
   unsigned long now = millis();
   for (uint8_t i = 0; i < gRoleCount; i++) {
-    NodePinRoleEntry* sens = &gRoles[i];
-    if (!roleIsSensor(sens)) continue;
-    bool raw = sens->role == ROLE_OPTICAL ? opticalActive(sens) : (digitalRead(sens->gpio) == LOW);
+    if (!roleIsSensorAt(i)) continue;
+    bool raw = pinRoleAt(i) == ROLE_OPTICAL ? opticalActiveAt(i) : (digitalRead(pinGpioAt(i)) == LOW);
     if (raw) {
-      sens->clearSinceMs = 0;
-      if (!sens->reportedActive) {
-        emitSensor(sens, true);
-        sens->reportedActive = true;
+      gPinRt[i].clearSinceMs = 0;
+      if (!gPinRt[i].reportedActive) {
+        emitSensorAt(i, true);
+        gPinRt[i].reportedActive = true;
       }
-    } else if (sens->reportedActive) {
-      if (sens->clearSinceMs == 0) {
-        sens->clearSinceMs = now;
-      } else if (now - sens->clearSinceMs >= CLEAR_HOLD_MS) {
-        emitSensor(sens, false);
-        sens->reportedActive = false;
-        sens->clearSinceMs = 0;
+    } else if (gPinRt[i].reportedActive) {
+      if (gPinRt[i].clearSinceMs == 0) {
+        gPinRt[i].clearSinceMs = now;
+      } else if (now - gPinRt[i].clearSinceMs >= CLEAR_HOLD_MS) {
+        emitSensorAt(i, false);
+        gPinRt[i].reportedActive = false;
+        gPinRt[i].clearSinceMs = 0;
       }
     }
   }
 }
 
-// ---- output engines ----
 static bool addressOwned(int addr) {
   for (uint8_t i = 0; i < gOutputCount; i++) {
-    for (uint8_t t = 0; t < gOutputs[i].triggerCount; t++) {
-      if (gOutputs[i].triggers[t].dcc == addr) return true;
+    uint8_t n = outTrigCountAt(i);
+    for (uint8_t t = 0; t < n; t++) {
+      NodeTrigger tr;
+      outTrigAt(i, t, &tr);
+      if (tr.dcc == addr) return true;
     }
   }
   return false;
 }
 
-static void setOutDigital(NodeOutput* o, uint8_t pinIx, bool on) {
-  if (pinIx >= o->pinCount) return;
-  writeDigital(o->gpio[pinIx], on);
+static void setOutDigital(uint8_t oi, uint8_t pinIx, bool on) {
+  if (pinIx >= outPinCountAt(oi)) return;
+  writeDigital(outGpioAt(oi, pinIx), on);
 }
 
-static void lcSetBarriers(NodeOutput* o, int deg) {
-  o->currentDeg = deg;
-  for (uint8_t i = 3; i < o->pinCount && i < 5; i++) {
-    if (o->servoIx[i] >= 0) writeServoDeg(o->servoIx[i], deg);
+static void lcSetBarriers(uint8_t oi, int deg) {
+  NodeOutputRuntime* r = &gOutRt[oi];
+  r->currentDeg = deg;
+  uint8_t n = outPinCountAt(oi);
+  for (uint8_t i = 3; i < n && i < 5; i++) {
+    if (r->servoIx[i] >= 0) writeServoDeg(r->servoIx[i], deg);
   }
 }
 
-static void lcApplyLights(NodeOutput* o, unsigned long now) {
-  // pin0 warning, pin1 left, pin2 right
-  bool warn = (o->lcPhase == LC_WARNING);
-  bool ww = (o->lcPhase == LC_WIGWAG || o->lcPhase == LC_BARRIERS_CLOSING
-      || o->lcPhase == LC_CLOSED || o->lcPhase == LC_BARRIERS_OPENING
-      || o->lcPhase == LC_CLEARING);
-  setOutDigital(o, 0, warn);
+static void lcApplyLights(uint8_t oi, unsigned long now) {
+  NodeOutputRuntime* r = &gOutRt[oi];
+  bool warn = (r->lcPhase == LC_WARNING);
+  bool ww = (r->lcPhase == LC_WIGWAG || r->lcPhase == LC_BARRIERS_CLOSING
+      || r->lcPhase == LC_CLOSED || r->lcPhase == LC_BARRIERS_OPENING
+      || r->lcPhase == LC_CLEARING);
+  setOutDigital(oi, 0, warn);
   if (!ww) {
-    setOutDigital(o, 1, false);
-    setOutDigital(o, 2, false);
-    o->nextToggleMs = 0;
+    setOutDigital(oi, 1, false);
+    setOutDigital(oi, 2, false);
+    r->nextToggleMs = 0;
     return;
   }
-  if (o->nextToggleMs == 0) {
-    o->wigwagLeftOn = true;
-    o->nextToggleMs = now + (unsigned long)o->wigwagOnMs;
+  if (r->nextToggleMs == 0) {
+    r->wigwagLeftOn = true;
+    r->nextToggleMs = now + (unsigned long)OI(oi, wigwagOnMs);
   }
-  if (now >= o->nextToggleMs) {
-    o->wigwagLeftOn = !o->wigwagLeftOn;
-    o->nextToggleMs = now + (unsigned long)(o->wigwagLeftOn ? o->wigwagOnMs : o->wigwagOffMs);
+  if (now >= r->nextToggleMs) {
+    r->wigwagLeftOn = !r->wigwagLeftOn;
+    r->nextToggleMs = now + (unsigned long)(r->wigwagLeftOn ? OI(oi, wigwagOnMs) : OI(oi, wigwagOffMs));
   }
-  setOutDigital(o, 1, o->wigwagLeftOn);
-  setOutDigital(o, 2, !o->wigwagLeftOn);
+  setOutDigital(oi, 1, r->wigwagLeftOn);
+  setOutDigital(oi, 2, !r->wigwagLeftOn);
 }
 
-static void lcUpdateBarrierMotion(NodeOutput* o, unsigned long now) {
-  int open = o->barrierOpenDeg;
-  int closed = o->barrierClosedDeg;
-  int travel = o->barrierTravelMs > 0 ? o->barrierTravelMs : 1;
-  if (o->lcPhase == LC_BARRIERS_CLOSING) {
-    float t = (float)(now - o->phaseStartedMs) / (float)travel;
+static void lcUpdateBarrierMotion(uint8_t oi, unsigned long now) {
+  NodeOutputRuntime* r = &gOutRt[oi];
+  int open = OI(oi, barrierOpenDeg);
+  int closed = OI(oi, barrierClosedDeg);
+  int travel = OI(oi, barrierTravelMs);
+  if (travel < 1) travel = 1;
+  if (r->lcPhase == LC_BARRIERS_CLOSING) {
+    float t = (float)(now - r->phaseStartedMs) / (float)travel;
     if (t < 0) t = 0;
     if (t > 1) t = 1;
-    int deg = (int)lround(open + (closed - open) * t);
-    lcSetBarriers(o, deg);
-  } else if (o->lcPhase == LC_BARRIERS_OPENING) {
-    float t = (float)(now - o->phaseStartedMs) / (float)travel;
+    lcSetBarriers(oi, (int)lround(open + (closed - open) * t));
+  } else if (r->lcPhase == LC_BARRIERS_OPENING) {
+    float t = (float)(now - r->phaseStartedMs) / (float)travel;
     if (t < 0) t = 0;
     if (t > 1) t = 1;
-    int deg = (int)lround(closed + (open - closed) * t);
-    lcSetBarriers(o, deg);
-  } else if (o->lcPhase == LC_CLOSED) {
-    lcSetBarriers(o, closed);
-  } else if (o->lcPhase == LC_IDLE_OPEN || o->lcPhase == LC_WARNING || o->lcPhase == LC_WIGWAG
-      || o->lcPhase == LC_CLEARING) {
-    lcSetBarriers(o, open);
+    lcSetBarriers(oi, (int)lround(closed + (open - closed) * t));
+  } else if (r->lcPhase == LC_CLOSED) {
+    lcSetBarriers(oi, closed);
+  } else if (r->lcPhase == LC_IDLE_OPEN || r->lcPhase == LC_WARNING || r->lcPhase == LC_WIGWAG
+      || r->lcPhase == LC_CLEARING) {
+    lcSetBarriers(oi, open);
   }
 }
 
-static void lcAdvance(NodeOutput* o, unsigned long now) {
-  if (o->phaseUntilMs == 0 || now < o->phaseUntilMs) return;
-  if (o->lcPhase == LC_WARNING) {
-    o->lcPhase = LC_WIGWAG;
-    o->phaseStartedMs = now;
-    int settle = o->wigwagOnMs * 2;
+static void lcAdvance(uint8_t oi, unsigned long now) {
+  NodeOutputRuntime* r = &gOutRt[oi];
+  if (r->phaseUntilMs == 0 || now < r->phaseUntilMs) return;
+  if (r->lcPhase == LC_WARNING) {
+    r->lcPhase = LC_WIGWAG;
+    r->phaseStartedMs = now;
+    int settle = OI(oi, wigwagOnMs) * 2;
     if (settle < 800) settle = 800;
-    o->phaseUntilMs = now + (unsigned long)settle;
-  } else if (o->lcPhase == LC_WIGWAG) {
-    o->lcPhase = LC_BARRIERS_CLOSING;
-    o->phaseStartedMs = now;
-    o->phaseUntilMs = now + (unsigned long)o->barrierTravelMs;
-  } else if (o->lcPhase == LC_BARRIERS_CLOSING) {
-    o->lcPhase = LC_CLOSED;
-    o->phaseUntilMs = 0;
-    lcSetBarriers(o, o->barrierClosedDeg);
-  } else if (o->lcPhase == LC_BARRIERS_OPENING) {
-    o->lcPhase = LC_CLEARING;
-    o->phaseStartedMs = now;
-    o->phaseUntilMs = now + LC_CLEARING_MS;
-    lcSetBarriers(o, o->barrierOpenDeg);
-  } else if (o->lcPhase == LC_CLEARING) {
-    o->lcPhase = LC_IDLE_OPEN;
-    o->phaseUntilMs = 0;
-    o->active = false;
-    setOutDigital(o, 0, false);
-    setOutDigital(o, 1, false);
-    setOutDigital(o, 2, false);
+    r->phaseUntilMs = now + (unsigned long)settle;
+  } else if (r->lcPhase == LC_WIGWAG) {
+    r->lcPhase = LC_BARRIERS_CLOSING;
+    r->phaseStartedMs = now;
+    r->phaseUntilMs = now + (unsigned long)OI(oi, barrierTravelMs);
+  } else if (r->lcPhase == LC_BARRIERS_CLOSING) {
+    r->lcPhase = LC_CLOSED;
+    r->phaseUntilMs = 0;
+    lcSetBarriers(oi, OI(oi, barrierClosedDeg));
+  } else if (r->lcPhase == LC_BARRIERS_OPENING) {
+    r->lcPhase = LC_CLEARING;
+    r->phaseStartedMs = now;
+    r->phaseUntilMs = now + LC_CLEARING_MS;
+    lcSetBarriers(oi, OI(oi, barrierOpenDeg));
+  } else if (r->lcPhase == LC_CLEARING) {
+    r->lcPhase = LC_IDLE_OPEN;
+    r->phaseUntilMs = 0;
+    r->active = false;
+    setOutDigital(oi, 0, false);
+    setOutDigital(oi, 1, false);
+    setOutDigital(oi, 2, false);
   }
 }
 
-static void lcStartClose(NodeOutput* o, unsigned long now) {
-  o->active = true;
-  o->lcPhase = LC_WARNING;
-  o->phaseStartedMs = now;
-  o->phaseUntilMs = now + (unsigned long)o->warningMs;
-  o->wigwagLeftOn = true;
-  o->nextToggleMs = 0;
-  lcSetBarriers(o, o->barrierOpenDeg);
+static void lcStartClose(uint8_t oi, unsigned long now) {
+  NodeOutputRuntime* r = &gOutRt[oi];
+  r->active = true;
+  r->lcPhase = LC_WARNING;
+  r->phaseStartedMs = now;
+  r->phaseUntilMs = now + (unsigned long)OI(oi, warningMs);
+  r->wigwagLeftOn = true;
+  r->nextToggleMs = 0;
+  lcSetBarriers(oi, OI(oi, barrierOpenDeg));
 }
 
-static void lcStartOpen(NodeOutput* o, unsigned long now) {
-  if (o->lcPhase == LC_IDLE_OPEN) {
-    lcSetBarriers(o, o->barrierOpenDeg);
+static void lcStartOpen(uint8_t oi, unsigned long now) {
+  NodeOutputRuntime* r = &gOutRt[oi];
+  if (r->lcPhase == LC_IDLE_OPEN) {
+    lcSetBarriers(oi, OI(oi, barrierOpenDeg));
     return;
   }
-  o->active = true;
-  o->lcPhase = LC_BARRIERS_OPENING;
-  o->phaseStartedMs = now;
-  o->phaseUntilMs = now + (unsigned long)o->barrierTravelMs;
-  if (o->nextToggleMs == 0) {
-    o->wigwagLeftOn = true;
-    o->nextToggleMs = now + (unsigned long)o->wigwagOnMs;
+  r->active = true;
+  r->lcPhase = LC_BARRIERS_OPENING;
+  r->phaseStartedMs = now;
+  r->phaseUntilMs = now + (unsigned long)OI(oi, barrierTravelMs);
+  if (r->nextToggleMs == 0) {
+    r->wigwagLeftOn = true;
+    r->nextToggleMs = now + (unsigned long)OI(oi, wigwagOnMs);
   }
 }
 
-static void applyTrigger(NodeOutput* o, const NodeTrigger* t, unsigned long now) {
-  switch (o->type) {
+static void applyTrigger(uint8_t oi, const NodeTrigger* t, unsigned long now) {
+  NodeOutputRuntime* r = &gOutRt[oi];
+  switch (outTypeAt(oi)) {
     case OUT_ON_OFF: {
       bool on = triggerIsOnish(t);
-      o->active = on;
-      setOutDigital(o, 0, on);
+      r->active = on;
+      setOutDigital(oi, 0, on);
       break;
     }
     case OUT_PULSE: {
-      o->active = true;
-      setOutDigital(o, 0, true);
-      o->pulseUntilMs = now + (unsigned long)o->pulseMs;
+      r->active = true;
+      setOutDigital(oi, 0, true);
+      r->pulseUntilMs = now + (unsigned long)OI(oi, pulseMs);
       break;
     }
     case OUT_BLINK: {
       bool start = triggerIsOnish(t);
-      o->active = start;
-      o->phaseHigh = start;
-      setOutDigital(o, 0, start);
-      o->nextToggleMs = start ? now + (unsigned long)o->onMs : 0;
+      r->active = start;
+      r->phaseHigh = start;
+      setOutDigital(oi, 0, start);
+      r->nextToggleMs = start ? now + (unsigned long)OI(oi, onMs) : 0;
       break;
     }
     case OUT_ALT_PAIR: {
       bool start = triggerIsOnish(t);
-      o->active = start;
-      o->phaseHigh = true;
+      r->active = start;
+      r->phaseHigh = true;
       if (start) {
-        setOutDigital(o, 0, true);
-        setOutDigital(o, 1, false);
-        o->nextToggleMs = now + (unsigned long)o->onMs;
+        setOutDigital(oi, 0, true);
+        setOutDigital(oi, 1, false);
+        r->nextToggleMs = now + (unsigned long)OI(oi, onMs);
       } else {
-        setOutDigital(o, 0, false);
-        setOutDigital(o, 1, false);
-        o->nextToggleMs = 0;
+        setOutDigital(oi, 0, false);
+        setOutDigital(oi, 1, false);
+        r->nextToggleMs = 0;
       }
       break;
     }
     case OUT_FADE: {
-      o->targetBright = t->hasBrightness ? t->brightness : (triggerIsOnish(t) ? 100 : 0);
-      o->fadeFromBright = o->currentBright;
-      o->fadeStartMs = now;
-      o->active = true;
+      r->targetBright = t->hasBrightness ? t->brightness : (triggerIsOnish(t) ? 100 : 0);
+      r->fadeFromBright = r->currentBright;
+      r->fadeStartMs = now;
+      r->active = true;
       break;
     }
     case OUT_SERVO: {
-      o->targetDeg = t->hasDeg ? t->deg : (triggerIsOnish(t) ? 90 : 0);
-      o->fadeStartMs = now;
-      o->fadeFromBright = o->currentDeg; // reuse as from-deg
-      o->active = true;
+      r->targetDeg = t->hasDeg ? t->deg : (triggerIsOnish(t) ? 90 : 0);
+      r->fadeStartMs = now;
+      r->fadeFromBright = r->currentDeg;
+      r->active = true;
       break;
     }
     case OUT_LEVEL_CROSSING: {
-      if (triggerIsOpenish(t)) lcStartOpen(o, now);
-      else lcStartClose(o, now);
+      if (triggerIsOpenish(t)) lcStartOpen(oi, now);
+      else lcStartClose(oi, now);
       break;
     }
     case OUT_DIGITAL_SIGNAL: {
-      o->signalOnMask = t->onMask;
-      o->signalFlashMask = t->flashMask;
-      o->signalFlashHigh = true;
-      o->active = (t->flashMask != 0);
-      o->nextToggleMs = o->active ? now + (unsigned long)o->flashMs : 0;
-      for (uint8_t i = 0; i < o->pinCount; i++) {
-        bool on = (o->signalOnMask & (1u << i)) != 0;
-        bool flash = (o->signalFlashMask & (1u << i)) != 0;
-        setOutDigital(o, i, on && (!flash || o->signalFlashHigh));
+      r->signalOnMask = t->onMask;
+      r->signalFlashMask = t->flashMask;
+      r->signalFlashHigh = true;
+      r->active = (t->flashMask != 0);
+      r->nextToggleMs = r->active ? now + (unsigned long)OI(oi, flashMs) : 0;
+      uint8_t n = outPinCountAt(oi);
+      for (uint8_t i = 0; i < n; i++) {
+        bool on = (r->signalOnMask & (1u << i)) != 0;
+        bool flash = (r->signalFlashMask & (1u << i)) != 0;
+        setOutDigital(oi, i, on && (!flash || r->signalFlashHigh));
       }
       break;
     }
@@ -1151,12 +1656,13 @@ static void applyTrigger(NodeOutput* o, const NodeTrigger* t, unsigned long now)
 static void handleAccessory(int addr, bool wireOn) {
   unsigned long now = millis();
   for (uint8_t i = 0; i < gOutputCount; i++) {
-    NodeOutput* o = &gOutputs[i];
-    for (uint8_t ti = 0; ti < o->triggerCount; ti++) {
-      NodeTrigger* t = &o->triggers[ti];
-      if (t->dcc != addr) continue;
-      if (t->wireOn != wireOn) continue;
-      applyTrigger(o, t, now);
+    uint8_t n = outTrigCountAt(i);
+    for (uint8_t ti = 0; ti < n; ti++) {
+      NodeTrigger tr;
+      outTrigAt(i, ti, &tr);
+      if (tr.dcc != addr) continue;
+      if (tr.wireOn != wireOn) continue;
+      applyTrigger(i, &tr, now);
       return;
     }
   }
@@ -1165,72 +1671,74 @@ static void handleAccessory(int addr, bool wireOn) {
 static void tickOutputs() {
   unsigned long now = millis();
   for (uint8_t i = 0; i < gOutputCount; i++) {
-    NodeOutput* o = &gOutputs[i];
-    switch (o->type) {
+    NodeOutputRuntime* r = &gOutRt[i];
+    switch (outTypeAt(i)) {
       case OUT_PULSE:
-        if (o->pulseUntilMs > 0 && now >= o->pulseUntilMs) {
-          setOutDigital(o, 0, false);
-          o->active = false;
-          o->pulseUntilMs = 0;
+        if (r->pulseUntilMs > 0 && now >= r->pulseUntilMs) {
+          setOutDigital(i, 0, false);
+          r->active = false;
+          r->pulseUntilMs = 0;
         }
         break;
       case OUT_BLINK:
-        if (o->active && o->nextToggleMs > 0 && now >= o->nextToggleMs) {
-          o->phaseHigh = !o->phaseHigh;
-          setOutDigital(o, 0, o->phaseHigh);
-          o->nextToggleMs = now + (unsigned long)(o->phaseHigh ? o->onMs : o->offMs);
+        if (r->active && r->nextToggleMs > 0 && now >= r->nextToggleMs) {
+          r->phaseHigh = !r->phaseHigh;
+          setOutDigital(i, 0, r->phaseHigh);
+          r->nextToggleMs = now + (unsigned long)(r->phaseHigh ? OI(i, onMs) : OI(i, offMs));
         }
         break;
       case OUT_ALT_PAIR:
-        if (o->active && o->nextToggleMs > 0 && now >= o->nextToggleMs) {
-          o->phaseHigh = !o->phaseHigh;
-          setOutDigital(o, 0, o->phaseHigh);
-          setOutDigital(o, 1, !o->phaseHigh);
-          o->nextToggleMs = now + (unsigned long)(o->phaseHigh ? o->onMs : o->offMs);
+        if (r->active && r->nextToggleMs > 0 && now >= r->nextToggleMs) {
+          r->phaseHigh = !r->phaseHigh;
+          setOutDigital(i, 0, r->phaseHigh);
+          setOutDigital(i, 1, !r->phaseHigh);
+          r->nextToggleMs = now + (unsigned long)(r->phaseHigh ? OI(i, onMs) : OI(i, offMs));
         }
         break;
       case OUT_FADE: {
-        int dur = o->fadeMs > 0 ? o->fadeMs : 1;
-        float t = (float)(now - o->fadeStartMs) / (float)dur;
+        int dur = OI(i, fadeMs);
+        if (dur < 1) dur = 1;
+        float t = (float)(now - r->fadeStartMs) / (float)dur;
         if (t >= 1.0f) {
-          o->currentBright = o->targetBright;
-          o->active = false;
+          r->currentBright = r->targetBright;
+          r->active = false;
         } else if (t > 0) {
-          o->currentBright = (int)lround(o->fadeFromBright + (o->targetBright - o->fadeFromBright) * t);
+          r->currentBright = (int)lround(r->fadeFromBright + (r->targetBright - r->fadeFromBright) * t);
         }
-        writePwmPercent(o->gpio[0], o->currentBright);
+        writePwmPercent(outGpioAt(i, 0), r->currentBright);
         break;
       }
       case OUT_SERVO: {
-        int dur = o->travelMs > 0 ? o->travelMs : 1;
-        // full 180° travel time scaled by delta
-        int from = o->fadeFromBright;
-        int delta = abs(o->targetDeg - from);
+        int dur = OI(i, travelMs);
+        if (dur < 1) dur = 1;
+        int from = r->fadeFromBright;
+        int delta = abs(r->targetDeg - from);
         int need = (int)((long)dur * delta / 180L);
         if (need < 1) need = 1;
-        float t = (float)(now - o->fadeStartMs) / (float)need;
+        float t = (float)(now - r->fadeStartMs) / (float)need;
         if (t >= 1.0f) {
-          o->currentDeg = o->targetDeg;
-          o->active = false;
+          r->currentDeg = r->targetDeg;
+          r->active = false;
         } else if (t > 0) {
-          o->currentDeg = (int)lround(from + (o->targetDeg - from) * t);
+          r->currentDeg = (int)lround(from + (r->targetDeg - from) * t);
         }
-        if (o->servoIx[0] >= 0) writeServoDeg(o->servoIx[0], o->currentDeg);
+        if (r->servoIx[0] >= 0) writeServoDeg(r->servoIx[0], r->currentDeg);
         break;
       }
       case OUT_LEVEL_CROSSING:
-        lcAdvance(o, now);
-        lcUpdateBarrierMotion(o, now);
-        lcApplyLights(o, now);
+        lcAdvance(i, now);
+        lcUpdateBarrierMotion(i, now);
+        lcApplyLights(i, now);
         break;
       case OUT_DIGITAL_SIGNAL:
-        if (o->signalFlashMask && o->nextToggleMs > 0 && now >= o->nextToggleMs) {
-          o->signalFlashHigh = !o->signalFlashHigh;
-          o->nextToggleMs = now + (unsigned long)o->flashMs;
-          for (uint8_t p = 0; p < o->pinCount; p++) {
-            bool on = (o->signalOnMask & (1u << p)) != 0;
-            bool flash = (o->signalFlashMask & (1u << p)) != 0;
-            setOutDigital(o, p, on && (!flash || o->signalFlashHigh));
+        if (r->signalFlashMask && r->nextToggleMs > 0 && now >= r->nextToggleMs) {
+          r->signalFlashHigh = !r->signalFlashHigh;
+          r->nextToggleMs = now + (unsigned long)OI(i, flashMs);
+          uint8_t n = outPinCountAt(i);
+          for (uint8_t p = 0; p < n; p++) {
+            bool on = (r->signalOnMask & (1u << p)) != 0;
+            bool flash = (r->signalFlashMask & (1u << p)) != 0;
+            setOutDigital(i, p, on && (!flash || r->signalFlashHigh));
           }
         }
         break;
@@ -1247,7 +1755,6 @@ static int findGpioBySilk(const char* silk) {
 }
 
 static void handleTestSample(char* p) {
-  // SAMPLE A15 [A0]
   while (*p == ' ') p++;
   if (!*p) return;
   char* sp = strchr(p, ' ');
@@ -1304,10 +1811,8 @@ static void handleTestSample(char* p) {
 }
 
 static void handleTest(const char* rest) {
-  // TEST SERVO D9 45 | TEST PWM D5 40 | TEST SAMPLE … | TEST 42 ON|OFF
   char buf[64];
   strCopyCap(buf, sizeof(buf), rest);
-  // trim
   char* p = buf;
   while (*p == ' ') p++;
   if (startsWithi(p, "SAMPLE")) {
@@ -1322,14 +1827,18 @@ static void handleTest(const char* rest) {
     if (!sp) return;
     *sp = '\0';
     int deg = atoi(sp + 1);
+    if (deg < 0) deg = 0;
+    if (deg > 180) deg = 180;
     int gpio = findGpioBySilk(p);
     if (gpio < 0) return;
-    // find or attach temp servo
     int8_t ix = -1;
     for (uint8_t i = 0; i < gOutputCount; i++) {
-      for (uint8_t j = 0; j < gOutputs[i].pinCount; j++) {
-        if (gOutputs[i].gpio[j] == gpio && gOutputs[i].servoIx[j] >= 0) {
-          ix = gOutputs[i].servoIx[j];
+      uint8_t n = outPinCountAt(i);
+      for (uint8_t j = 0; j < n; j++) {
+        if (outGpioAt(i, j) == gpio && gOutRt[i].servoIx[j] >= 0) {
+          ix = gOutRt[i].servoIx[j];
+          // Keep runtime angle in sync so tickOutputs does not yank the horn back.
+          holdServoOutput(i, deg);
         }
       }
     }
@@ -1353,7 +1862,6 @@ static void handleTest(const char* rest) {
     writePwmPercent(gpio, pct);
     return;
   }
-  // TEST {addr} ON|OFF
   int addr = atoi(p);
   char* sp = strchr(p, ' ');
   if (!sp || addr <= 0) return;
@@ -1364,13 +1872,34 @@ static void handleTest(const char* rest) {
 }
 
 static void handleLine(char* line) {
-  // strip CR
   size_t n = strlen(line);
   while (n > 0 && (line[n - 1] == '\r' || line[n - 1] == '\n')) {
     line[--n] = '\0';
   }
   if (n == 0) return;
 
+  if (streqi(line, "CFG CLEAR")) {
+    nodeClearCfg();
+    return;
+  }
+  if (streqi(line, "BOOTLOADER")) {
+    // Soft enter ROM download mode (USB-CDC ESP32-S3 / S2). Classic ESP32 uses UART DTR/RTS instead.
+    Stream* s = boardLink();
+#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2)
+    if (s) {
+      s->println(F("OK"));
+      s->flush();
+    }
+    delay(30);
+    REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+    esp_restart();
+#elif defined(ESP32)
+    if (s) s->println(F("ERR uart-reset"));
+#else
+    if (s) s->println(F("ERR unsupported"));
+#endif
+    return;
+  }
   if (startsWithi(line, "CFG ")) {
     nodeApplyCfgJson(line + 4);
     return;
@@ -1392,11 +1921,9 @@ static void handleLine(char* line) {
     return;
   }
   if (startsWithi(line, "OUT ")) {
-    // legacy: OUT {addr} ON|OFF
     handleTest(line + 4);
     return;
   }
-  // {addr} ON|OFF
   if (line[0] >= '0' && line[0] <= '9') {
     int addr = atoi(line);
     char* sp = strchr(line, ' ');
@@ -1434,15 +1961,25 @@ void nodeEngineBegin() {
   gCfgValid = false;
   gLineLen = 0;
   clearRuntime();
+#if defined(NODE_BAKED_CONFIG)
+  gRoleCount = gBakedPinCount;
+  if (gRoleCount > NODE_MAX_PIN_ROLES) gRoleCount = NODE_MAX_PIN_ROLES;
+  gRefGpio = gBakedRefGpio;
+  gOutputCount = gBakedOutputCount;
+  if (gOutputCount > NODE_MAX_OUTPUTS) gOutputCount = NODE_MAX_OUTPUTS;
+  applySensorPinModes();
+  for (uint8_t i = 0; i < gOutputCount; i++) finishOutput(i);
+#else
   uint16_t len = 0;
   if (loadCfgIntoBuffer(gLine, NODE_MAX_LINE, &len) && len > 0) {
     gCfgLen = len;
     gCfgValid = true;
     rebuildFromCfgBuffer(gLine);
   } else {
-    boardLoadDefaultPinRoles(gRoles, &gRoleCount, &gRefGpio);
+    boardLoadDefaultPinRoles(gPinCfg, &gRoleCount, &gRefGpio);
     applySensorPinModes();
   }
+#endif
   gLineLen = 0;
 
   Stream* s = boardLink();
@@ -1451,6 +1988,8 @@ void nodeEngineBegin() {
     s->print(nodeEffectivePrefix());
     s->print(' ');
     s->print(boardType());
+    s->print(" v");
+    s->print(nodeImageVersion());
     s->println(" READY");
   }
   snapshotSensors();
