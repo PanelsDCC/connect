@@ -2491,11 +2491,14 @@ function servoPinsForOutput(o) {
   return [];
 }
 
-function renderManualSetHtml(o, boardId) {
+/** Manual angle entry for Configure only — the Nodes list remounts on poll and would wipe typing. */
+function renderManualSetHtml(o, boardId, currentDeg) {
   const pins = servoPinsForOutput(o);
   if (!pins.length || !boardId) return '';
+  const deg = Number(currentDeg);
+  const shown = Number.isFinite(deg) ? Math.max(0, Math.min(180, Math.round(deg))) : 90;
   return '<div class="nodes-servo-set">' +
-    '<label>Manual set <input type="number" min="0" max="180" value="90" data-servo-deg></label>' +
+    '<label>Manual set <input type="number" min="0" max="180" value="' + shown + '" data-servo-deg></label>' +
     '<button type="button" class="btn btn-secondary btn-small" data-servo-set' +
     ' data-board-id="' + escapeHtml(boardId) + '"' +
     ' data-servo-pins="' + escapeHtml(pins.join(',')) + '">Set</button>' +
@@ -2532,7 +2535,6 @@ function renderOutputFuncChip(o, boardId, outIx) {
     (btns
       ? '<div class="nodes-func-states">' + btns + '</div>'
       : '<p class="nodes-io-empty">No DCC triggers</p>') +
-    renderManualSetHtml(o, boardId) +
     '</div>';
 }
 
@@ -2560,7 +2562,7 @@ function renderAssignedOutputCard(board, o, ix, state) {
       '<span aria-hidden="true">⚙</span></button>') +
     '</span></div>' +
     (btns ? '<div class="nodes-func-states">' + btns + '</div>' : '<p class="nodes-io-empty">No DCC triggers</p>') +
-    renderManualSetHtml(o, board.id) +
+    renderManualSetHtml(o, board.id, state?.deg) +
     '<div class="nodes-output-meta">' + escapeHtml(outputLabel(o.type)) +
     ' · ' + escapeHtml(triggerSummary(o)) + '</div>';
   card.querySelector('[data-out-cfg]')?.addEventListener('click', (ev) => {

@@ -122,15 +122,16 @@
       "descriptionPatterns": ["panelsdcc node"]
     },
     {
-      "name": "DCC-EX CSB1 / ESP32-S3 (USB CDC)",
+      "name": "ESP32-S3 USB CDC / JTAG (bootloader or CSB1)",
       "vendorId": "0x303a",
       "productId": "0x1001",
-      "systemType": "dccpp",
+      "systemType": "usb-serial-candidate",
+      "needsProbe": true,
       "defaultPort": null,
       "config": {
         "baudRate": "115200"
       },
-      "descriptionPatterns": ["dcc-ex", "dcc++", "dccpp", "csb1", "espressif"]
+      "descriptionPatterns": ["dcc-ex", "dcc++", "dccpp", "csb1", "espressif", "usb jtag"]
     },
     {
       "name": "SPROG IIv3",
