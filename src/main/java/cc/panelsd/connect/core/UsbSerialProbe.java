@@ -14,19 +14,22 @@ import java.util.regex.Pattern;
 
 /**
  * Classifies ambiguous USB-UART candidates (e.g. CH340) by opening the serial port
- * and probing for a PanelsDCC Sensor Board banner @ 9600, then DCC-EX/DCC++ @ 115200.
+ * and probing for a PanelsDCC Node banner @ 9600, then DCC-EX/DCC++ @ 115200.
  */
 public final class UsbSerialProbe {
 
-    public static final int SENSOR_BAUD = 9600;
+    public static final int NODE_BAUD = 9600;
     public static final int DCCPP_BAUD = 115200;
 
-    /** Legacy: {@code PanelsDCC Sensor Board A READY}; new: {@code PanelsDCC Node A nano-avr READY}. */
-    private static final Pattern SENSOR_READY =
-            Pattern.compile("^PanelsDCC (?:Sensor Board|Node) (\\S+)(?: (\\S+))? READY\\s*$");
+    /**
+     * {@code PanelsDCC Node A nano-avr READY}, optional {@code v2026-10-27} / {@code v1.0.4},
+     * or legacy {@code PanelsDCC Node A READY}.
+     */
+    private static final Pattern NODE_READY =
+            Pattern.compile("^PanelsDCC Node (\\S+)(?: (\\S+?))?(?: v(\\d{4}-\\d{2}-\\d{2}|\\d+(?:\\.\\d+)*))? READY\\s*$");
     /** Nano boot after DTR can exceed 1.5s after host reboot / USB re-enum. */
-    static final long SENSOR_BOOT_WAIT_MS = 4000L;
-    private static final long SENSOR_RETRY_SETTLE_MS = 500L;
+    static final long NODE_BOOT_WAIT_MS = 4000L;
+    private static final long NODE_RETRY_SETTLE_MS = 500L;
     private static final long DCCPP_REPLY_WAIT_MS = 1000L;
 
     private final SerialPortOpsFactory portFactory;
@@ -43,8 +46,8 @@ public final class UsbSerialProbe {
      * Classify a candidate tty. Prefer sensor banner first, then DCC++ identity.
      */
     public ProbeResult classify(String portName) {
-        ProbeResult sensor = trySensorBoard(portName);
-        if (sensor.type == DeviceType.SENSOR_BOARD) {
+        ProbeResult sensor = tryNode(portName);
+        if (sensor.type == DeviceType.NODE) {
             return sensor;
         }
         if (sensor.portBusy) {
@@ -63,8 +66,8 @@ public final class UsbSerialProbe {
     /**
      * Quick verify for a cached sensor classification: open @ 9600 and look for READY.
      */
-    public ProbeResult verifySensorBoard(String portName) {
-        return trySensorBoard(portName);
+    public ProbeResult verifyNode(String portName) {
+        return tryNode(portName);
     }
 
     /**
@@ -74,29 +77,29 @@ public final class UsbSerialProbe {
         return tryDccpp(portName);
     }
 
-    private ProbeResult trySensorBoard(String portName) {
-        ProbeResult first = trySensorBoardOnce(portName);
-        if (first.type == DeviceType.SENSOR_BOARD || first.portBusy) {
+    private ProbeResult tryNode(String portName) {
+        ProbeResult first = tryNodeOnce(portName);
+        if (first.type == DeviceType.NODE || first.portBusy) {
             return first;
         }
         // Second chance: first open often resets the Nano mid-enumeration after reboot.
-        sleepQuietly(SENSOR_RETRY_SETTLE_MS);
-        return trySensorBoardOnce(portName);
+        sleepQuietly(NODE_RETRY_SETTLE_MS);
+        return tryNodeOnce(portName);
     }
 
     /** Live sensor report, e.g. {@code A-A3: DETECTED}. Prefix is group 1. */
     private static final Pattern SENSOR_EDGE =
             Pattern.compile("^([A-Z]{1,2})-[A-Z]\\d+: (DETECTED|CLEAR)$");
-    /** On-demand identity: {@code ID B nano-esp32}. */
+    /** On-demand identity: {@code ID B nano-esp32} or {@code ID B nano-esp32 2026-10-27}. */
     private static final Pattern SENSOR_ID =
-            Pattern.compile("^ID ([A-Za-z]{1,2}) (\\S+)\\s*$");
+            Pattern.compile("^ID ([A-Za-z]{1,2}) (\\S+)(?: (\\d{4}-\\d{2}-\\d{2}|\\d+(?:\\.\\d+)*))?\\s*$");
 
-    private ProbeResult trySensorBoardOnce(String portName) {
+    private ProbeResult tryNodeOnce(String portName) {
         SerialPortOps port = portFactory.create();
         try {
-            port.open(portName, SENSOR_BAUD);
+            port.open(portName, NODE_BAUD);
             // Opening often toggles DTR and resets AVR Nanos — wait for boot banner.
-            List<String> lines = port.readLines(SENSOR_BOOT_WAIT_MS);
+            List<String> lines = port.readLines(NODE_BOOT_WAIT_MS);
             ProbeResult ready = readyFrom(lines);
             if (ready != null) {
                 return ready;
@@ -127,11 +130,11 @@ public final class UsbSerialProbe {
             if (looksLikeLiveNode(lines)) {
                 // Prefix stays unknown unless a sensor line names it. Callers keep
                 // the prefix chosen at flash time instead of assuming A.
-                return ProbeResult.sensorBoard(prefixFromSensorLines(lines), null);
+                return ProbeResult.node(prefixFromSensorLines(lines), null);
             }
             return ProbeResult.unknown();
         } catch (Exception e) {
-            System.err.println("USB sensor probe open/read failed on " + portName + ": " + e.getMessage());
+            System.err.println("USB node probe open/read failed on " + portName + ": " + e.getMessage());
             return ProbeResult.portBusy();
         } finally {
             port.closeQuietly();
@@ -142,7 +145,7 @@ public final class UsbSerialProbe {
         for (String line : lines) {
             Matcher m = SENSOR_ID.matcher(line.trim());
             if (m.matches()) {
-                return ProbeResult.sensorBoard(m.group(1).toUpperCase(), m.group(2));
+                return ProbeResult.node(m.group(1).toUpperCase(), m.group(2), m.group(3));
             }
         }
         return null;
@@ -150,10 +153,9 @@ public final class UsbSerialProbe {
 
     private static ProbeResult readyFrom(List<String> lines) {
         for (String line : lines) {
-            Matcher m = SENSOR_READY.matcher(line.trim());
+            Matcher m = NODE_READY.matcher(line.trim());
             if (m.matches()) {
-                String boardType = m.groupCount() >= 2 ? m.group(2) : null;
-                return ProbeResult.sensorBoard(m.group(1), boardType);
+                return ProbeResult.node(m.group(1), m.group(2), m.group(3));
             }
         }
         return null;
@@ -226,55 +228,76 @@ public final class UsbSerialProbe {
     /**
      * Parse a sensor READY banner line; returns the board prefix or null.
      */
-    public static String parseSensorReadyPrefix(String line) {
+    public static String parseNodeReadyPrefix(String line) {
         if (line == null) {
             return null;
         }
-        Matcher m = SENSOR_READY.matcher(line.trim());
+        Matcher m = NODE_READY.matcher(line.trim());
         return m.matches() ? m.group(1) : null;
     }
 
     /** Optional boardType from READY banner (null for legacy Sensor Board lines). */
-    public static String parseSensorReadyBoardType(String line) {
+    public static String parseNodeReadyBoardType(String line) {
         if (line == null) {
             return null;
         }
-        Matcher m = SENSOR_READY.matcher(line.trim());
+        Matcher m = NODE_READY.matcher(line.trim());
         return m.matches() ? m.group(2) : null;
     }
 
+    /** Optional image version from READY banner ({@code v2026-10-27}). */
+    public static String parseNodeReadyVersion(String line) {
+        if (line == null) {
+            return null;
+        }
+        Matcher m = NODE_READY.matcher(line.trim());
+        return m.matches() ? m.group(3) : null;
+    }
+
     public enum DeviceType {
-        SENSOR_BOARD,
+        NODE,
         DCCPP,
         UNKNOWN
     }
 
     public static final class ProbeResult {
         public final DeviceType type;
-        /** Board prefix when {@link DeviceType#SENSOR_BOARD}, else null. */
+        /** Board prefix when {@link DeviceType#NODE}, else null. */
         public final String prefix;
         /** Board type id when present on READY banner (e.g. nano-avr). */
         public final String boardType;
+        /** Catalog image version when present on READY / ID reply (e.g. {@code 2026-10-27}). */
+        public final String firmwareVersion;
         /** True when the serial port could not be opened/read (retry sooner). */
         public final boolean portBusy;
 
         private ProbeResult(DeviceType type, String prefix, boolean portBusy) {
-            this(type, prefix, null, portBusy);
+            this(type, prefix, null, null, portBusy);
         }
 
         private ProbeResult(DeviceType type, String prefix, String boardType, boolean portBusy) {
+            this(type, prefix, boardType, null, portBusy);
+        }
+
+        private ProbeResult(
+                DeviceType type, String prefix, String boardType, String firmwareVersion, boolean portBusy) {
             this.type = type;
             this.prefix = prefix;
             this.boardType = boardType;
+            this.firmwareVersion = firmwareVersion;
             this.portBusy = portBusy;
         }
 
-        public static ProbeResult sensorBoard(String prefix) {
-            return new ProbeResult(DeviceType.SENSOR_BOARD, prefix, null, false);
+        public static ProbeResult node(String prefix) {
+            return new ProbeResult(DeviceType.NODE, prefix, null, null, false);
         }
 
-        public static ProbeResult sensorBoard(String prefix, String boardType) {
-            return new ProbeResult(DeviceType.SENSOR_BOARD, prefix, boardType, false);
+        public static ProbeResult node(String prefix, String boardType) {
+            return new ProbeResult(DeviceType.NODE, prefix, boardType, null, false);
+        }
+
+        public static ProbeResult node(String prefix, String boardType, String firmwareVersion) {
+            return new ProbeResult(DeviceType.NODE, prefix, boardType, firmwareVersion, false);
         }
 
         public static ProbeResult dccpp() {
@@ -291,8 +314,8 @@ public final class UsbSerialProbe {
 
         public String systemType() {
             switch (type) {
-                case SENSOR_BOARD:
-                    return DeviceDiscoveryService.SYSTEM_TYPE_SENSOR_BOARD;
+                case NODE:
+                    return DeviceDiscoveryService.SYSTEM_TYPE_NODE;
                 case DCCPP:
                     return DeviceDiscoveryService.SYSTEM_TYPE_DCCPP;
                 default:

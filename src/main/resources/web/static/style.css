@@ -736,6 +736,43 @@ input[type="file"].file-input-hidden {
     margin-bottom: 24px;
 }
 
+.flash-stages {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    list-style: none;
+    padding: 0;
+    margin: 0 0 12px;
+}
+
+.flash-stages[hidden] {
+    display: none !important;
+}
+
+.flash-stages li {
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: #e9ecef;
+    color: #666;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.flash-stages li.is-current {
+    background: #0e639c;
+    color: #fff;
+}
+
+.flash-stages li.is-done {
+    background: #d8f3e2;
+    color: #0a7a2f;
+}
+
+.flash-stages li.is-failed {
+    background: #f8d0d0;
+    color: #a00;
+}
+
 .sensors-flash-log {
     margin-top: 12px;
     max-height: 240px;
@@ -1662,6 +1699,33 @@ input[type="file"].file-input-hidden {
 
 .nodes-output-card .nodes-func-states {
     margin: 0;
+}
+
+.nodes-servo-set {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.nodes-servo-set label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    font-size: 12px;
+    color: #444;
+}
+
+.nodes-servo-set input {
+    width: 4.5rem;
+    height: 30px;
+    margin: 0;
+    padding: 0 8px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 12px;
 }
 
 .nodes-output-meta {

@@ -1,0 +1,95 @@
+{
+  "images": [
+    {
+      "id": "mega-avr",
+      "version": "2026-10-27",
+      "tool": "avrdude",
+      "filename": "mega-avr.hex",
+      "mcu": "atmega2560",
+      "programmer": "wiring",
+      "baud": 115200,
+      "sha256": "1877e1aa913566daa92c5ab8fecd931b467ccb5d98b5bd015cde1ea13fdfbf00"
+    },
+    {
+      "id": "mega-esp32",
+      "version": "2026-10-27",
+      "tool": "esptool",
+      "chip": "esp32",
+      "baud": 460800,
+      "flashArgs": [
+        "-z",
+        "--flash_mode",
+        "dio",
+        "--flash_freq",
+        "80m",
+        "--flash_size",
+        "detect"
+      ],
+      "parts": [
+        {
+          "filename": "mega-esp32.bootloader.bin",
+          "offset": "0x1000",
+          "sha256": "3d97b71a61331ebaddef2a74e090c35299650f395f1387f85130010e84e46563"
+        },
+        {
+          "filename": "mega-esp32.partitions.bin",
+          "offset": "0x8000",
+          "sha256": "148b959cbff1c38aa8e1d5c0ba9d612c54997b945e56a63f41223eef650653a1"
+        },
+        {
+          "filename": "mega-esp32.boot_app0.bin",
+          "offset": "0xe000",
+          "sha256": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0"
+        },
+        {
+          "filename": "mega-esp32.bin",
+          "offset": "0x10000",
+          "sha256": "4535564e3ca9a8e5086dfe3ebb9fec4619a359c2112fd7517876f33dd2a41b6f"
+        }
+      ]
+    },
+    {
+      "id": "nano-esp32",
+      "version": "2026-10-27",
+      "tool": "esptool",
+      "chip": "esp32s3",
+      "baud": 460800,
+      "flashArgs": [
+        "-z",
+        "--flash_mode",
+        "dio",
+        "--flash_freq",
+        "80m",
+        "--flash_size",
+        "16MB"
+      ],
+      "parts": [
+        {
+          "filename": "nano-esp32.bootloader.bin",
+          "offset": "0x0",
+          "sha256": "2a71d69b471e20c2bac7fb469f3c6a807b3ebee780e348e5889db0da849ca363"
+        },
+        {
+          "filename": "nano-esp32.partitions.bin",
+          "offset": "0x8000",
+          "sha256": "a8ed437803d579ea4db97d60e6b2eac9fc8a8ffadf6cfdcd2493130b17144e40"
+        },
+        {
+          "filename": "nano-esp32.boot_app0.bin",
+          "offset": "0xe000",
+          "sha256": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0"
+        },
+        {
+          "filename": "nano-esp32.bin",
+          "offset": "0x10000",
+          "sha256": "e1577361150bba760ac4ba8c17eaca42fb9e8e89ca2e6cd9f38ec3b37db31d51"
+        },
+        {
+          "filename": "nano-esp32.recovery.bin",
+          "offset": "0xf70000",
+          "sha256": "4762ca8273b1387460769f0f32e345aba6c7112ada584c5e86e70dd586c1a0fc"
+        }
+      ]
+    }
+  ]
+}

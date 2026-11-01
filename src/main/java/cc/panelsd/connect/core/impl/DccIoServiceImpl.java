@@ -14,16 +14,19 @@ import cc.panelsd.connect.core.events.DccEventBus;
 import cc.panelsd.connect.core.impl.dccpp.DccppConnection;
 import cc.panelsd.connect.core.impl.nce.NceSerialConnection;
 import cc.panelsd.connect.core.impl.nce.NceUsbConnection;
-import cc.panelsd.connect.core.impl.sensor.BoardProfile;
-import cc.panelsd.connect.core.impl.sensor.BluetoothNodeSupport;
-import cc.panelsd.connect.core.impl.sensor.NodeInventory;
-import cc.panelsd.connect.core.impl.sensor.NodeOutputMirror;
-import cc.panelsd.connect.core.impl.sensor.NodeOutputSchemas;
-import cc.panelsd.connect.core.impl.sensor.NodeSession;
-import cc.panelsd.connect.core.impl.sensor.SensorBoardFlasher;
-import cc.panelsd.connect.core.impl.sensor.SensorBoardSession;
-import cc.panelsd.connect.core.impl.sensor.SensorBoardSupport;
-import cc.panelsd.connect.core.impl.sensor.VirtualNodeSession;
+import cc.panelsd.connect.core.impl.node.BoardProfile;
+import cc.panelsd.connect.core.impl.node.BluetoothNodeSupport;
+import cc.panelsd.connect.core.impl.node.ImageVersions;
+import cc.panelsd.connect.core.impl.node.NodeCfgDocument;
+import cc.panelsd.connect.core.impl.node.NodeInventory;
+import cc.panelsd.connect.core.impl.node.NodeOutputMirror;
+import cc.panelsd.connect.core.impl.node.NodeOutputSchemas;
+import cc.panelsd.connect.core.impl.node.NodeSession;
+import cc.panelsd.connect.core.impl.node.FlashPortScanner;
+import cc.panelsd.connect.core.impl.node.NodeFlasher;
+import cc.panelsd.connect.core.impl.node.UsbNodeSession;
+import cc.panelsd.connect.core.impl.node.NodeSupport;
+import cc.panelsd.connect.core.impl.node.VirtualNodeSession;
 import cc.panelsd.connect.core.impl.xnet.elite.XNetEliteConnection;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -34,6 +37,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -43,6 +47,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * In-memory implementation of {@link DccIoService} that manages JMRI-backed
@@ -52,11 +58,13 @@ public final class DccIoServiceImpl implements DccIoService {
 
     private static final long UNKNOWN_PROBE_COOLDOWN_MS = 12_000L;
     private static final long BUSY_PROBE_COOLDOWN_MS = 4_000L;
+    /** Known / inventory node ports retry sooner than true unknowns. */
+    private static final long KNOWN_NODE_PROBE_COOLDOWN_MS = 2_000L;
     private static final long CACHE_MISS_SETTLE_MS = 750L;
 
     private final Map<String, CommandStationConnection> connections = new ConcurrentHashMap<>();
     private final Map<String, ThrottleSession> throttles = new ConcurrentHashMap<>();
-    private final Map<String, SensorBoardSession> sensorSessions = new ConcurrentHashMap<>();
+    private final Map<String, UsbNodeSession> nodeSessions = new ConcurrentHashMap<>();
     private final Map<String, VirtualNodeSession> shimSessions = new ConcurrentHashMap<>();
     /** Ports held released for flashing — skip auto-connect until resume. */
     private final Map<String, ReleasedSensorPort> releasedSensorPorts = new ConcurrentHashMap<>();
@@ -68,13 +76,20 @@ public final class DccIoServiceImpl implements DccIoService {
     private final DccEventBus eventBus = new DccEventBus();
     private final DeviceDiscoveryService discoveryService = new DeviceDiscoveryService();
     private final UsbSerialProbe usbProbe = new UsbSerialProbe();
+    private final FlashPortScanner flashPortScanner = new FlashPortScanner(usbProbe);
+    /** Held while a port is opened for a probe or a node session, so a flash can wait for that open to finish. */
+    private final Object usbProbeLock = new Object();
+    /** Serial-device keys whose node session must stay closed until flashing finishes. */
+    private final Set<String> flashingPortKeys = ConcurrentHashMap.newKeySet();
     private final UsbProbeCache probeCache = new UsbProbeCache();
-    private final SensorBoardFlasher sensorFlasher = new SensorBoardFlasher();
+    private final NodeFlasher nodeFlasher = new NodeFlasher();
     private final NodeInventory nodeInventory = new NodeInventory();
     private final NodeOutputMirror nodeOutputMirror = new NodeOutputMirror();
 
     /** Ports that recently classified as unknown — avoid hammering/resetting devices. */
     private final Map<String, Long> probeCooldownUntil = new ConcurrentHashMap<>();
+    /** Prefixes that must not receive a CFG push after the next USB bind (start fresh). */
+    private final Set<String> skipCfgPushPrefixes = ConcurrentHashMap.newKeySet();
 
     private volatile Consumer<JsonObject> sensorHardwarePublisher;
 
@@ -153,7 +168,7 @@ public final class DccIoServiceImpl implements DccIoService {
 
     private JsonArray channelsJsonForPrefix(String prefix, String boardType) {
         JsonArray channels = new JsonArray();
-        for (SensorBoardSupport.ChannelDef def : SensorBoardSupport.channelDefs(prefix, boardType)) {
+        for (NodeSupport.ChannelDef def : NodeSupport.channelDefs(prefix, boardType)) {
             JsonObject ch = new JsonObject();
             ch.addProperty("id", def.id);
             ch.addProperty("label", def.label);
@@ -177,7 +192,7 @@ public final class DccIoServiceImpl implements DccIoService {
                 existing.add(el.getAsJsonObject().get("id").getAsString());
             }
         }
-        for (SensorBoardSupport.ChannelDef def : SensorBoardSupport.virtualChannelDefs(prefix, outputs)) {
+        for (NodeSupport.ChannelDef def : NodeSupport.virtualChannelDefs(prefix, outputs)) {
             if (existing.contains(def.id)) {
                 continue;
             }
@@ -206,7 +221,7 @@ public final class DccIoServiceImpl implements DccIoService {
     }
 
     /**
-     * Auto-discover and connect to detected controllers / sensor boards.
+     * Auto-discover and connect to detected controllers / nodes.
      */
     private void autoConnectDevices() {
         checkForDisconnectedPorts();
@@ -216,9 +231,9 @@ public final class DccIoServiceImpl implements DccIoService {
             if (connectedPorts.contains(device.port)) {
                 continue;
             }
-            // Held for flashing / manual release — do not auto-bind
-            if (releasedSensorPorts.containsKey(SensorBoardSupport.barePort(device.port))
-                    || releasedSensorPorts.containsKey(device.port)) {
+            // Held for flashing / manual release — do not auto-bind.
+            // cu.* and tty.* are one chip, so a release of either covers both.
+            if (sensorPortReleased(device.port) || isFlashingPort(device.port)) {
                 continue;
             }
 
@@ -234,8 +249,8 @@ public final class DccIoServiceImpl implements DccIoService {
                 }
             }
 
-            if (DeviceDiscoveryService.SYSTEM_TYPE_SENSOR_BOARD.equals(device.systemType)) {
-                startSensorBoard(device);
+            if (DeviceDiscoveryService.SYSTEM_TYPE_NODE.equals(device.systemType)) {
+                startNode(device);
                 continue;
             }
 
@@ -291,6 +306,15 @@ public final class DccIoServiceImpl implements DccIoService {
      * Updates {@code device} in place. Returns false if classification failed / unknown.
      */
     private boolean classifyCandidate(DeviceDiscoveryService.DetectedDevice device) {
+        synchronized (usbProbeLock) {
+            if (isFlashingPort(device.port)) {
+                return false;
+            }
+            return classifyCandidateHoldingLock(device);
+        }
+    }
+
+    private boolean classifyCandidateHoldingLock(DeviceDiscoveryService.DetectedDevice device) {
         ProbeResult result = null;
         boolean cacheMiss = false;
 
@@ -298,9 +322,9 @@ public final class DccIoServiceImpl implements DccIoService {
         if (device.byPath != null) {
             UsbProbeCache.Entry cached = probeCache.get(device.byPath);
             if (cached != null) {
-                if (DeviceDiscoveryService.SYSTEM_TYPE_SENSOR_BOARD.equals(cached.type)) {
-                    result = usbProbe.verifySensorBoard(device.port);
-                    if (result.type != DeviceType.SENSOR_BOARD) {
+                if (DeviceDiscoveryService.SYSTEM_TYPE_NODE.equals(cached.type)) {
+                    result = usbProbe.verifyNode(device.port);
+                    if (result.type != DeviceType.NODE) {
                         probeCache.remove(device.byPath);
                         cacheMiss = true;
                         result = null;
@@ -325,12 +349,22 @@ public final class DccIoServiceImpl implements DccIoService {
         }
 
         if (result.type == DeviceType.UNKNOWN) {
-            long cooldown = result.portBusy ? BUSY_PROBE_COOLDOWN_MS : UNKNOWN_PROBE_COOLDOWN_MS;
-            probeCooldownUntil.put(device.port, System.currentTimeMillis() + cooldown);
-            System.out.println("USB serial probe: unknown device on " + device.port
-                    + (result.portBusy ? " (port busy)" : "")
-                    + " — leaving alone for " + (cooldown / 1000) + "s");
-            return false;
+            // Arduino VID/PID already named a board type (e.g. Nano ESP32) — bind without
+            // a serial banner so plug-and-play does not wait for Probe.
+            ProbeResult hinted = softBindFromUsbHint(device);
+            if (hinted != null && !result.portBusy) {
+                result = hinted;
+            } else {
+                long cooldown = result.portBusy ? BUSY_PROBE_COOLDOWN_MS : UNKNOWN_PROBE_COOLDOWN_MS;
+                if (!result.portBusy && isKnownNodePort(device)) {
+                    cooldown = KNOWN_NODE_PROBE_COOLDOWN_MS;
+                }
+                probeCooldownUntil.put(device.port, System.currentTimeMillis() + cooldown);
+                System.out.println("USB serial probe: unknown device on " + device.port
+                        + (result.portBusy ? " (port busy)" : "")
+                        + " — leaving alone for " + (cooldown / 1000) + "s");
+                return false;
+            }
         }
 
         probeCooldownUntil.remove(device.port);
@@ -338,12 +372,47 @@ public final class DccIoServiceImpl implements DccIoService {
 
         if (device.byPath != null) {
             probeCache.put(device.byPath, device.systemType,
-                    result.type == DeviceType.SENSOR_BOARD ? result.prefix : null);
+                    result.type == DeviceType.NODE ? result.prefix : null);
         }
 
         System.out.println("USB serial probe: " + device.port + " → " + device.systemType
                 + (result.prefix != null ? " prefix=" + result.prefix : ""));
         return true;
+    }
+
+    private boolean isKnownNodePort(DeviceDiscoveryService.DetectedDevice device) {
+        if (device == null) {
+            return false;
+        }
+        if (nodeInventory.findByEndpoint(device.port) != null) {
+            return true;
+        }
+        String bare = NodeSupport.barePort(device.port);
+        return bare != null && nodeInventory.findByEndpoint(bare) != null;
+    }
+
+    /**
+     * When USB identity already carries a valid boardType, treat the port as a node
+     * even if the serial READY/ID probe missed (common on native-USB ESP32).
+     */
+    private ProbeResult softBindFromUsbHint(DeviceDiscoveryService.DetectedDevice device) {
+        if (device == null || device.config == null) {
+            return null;
+        }
+        String hintedType = device.config.get("boardType");
+        if (!BoardProfile.isValid(hintedType)) {
+            return null;
+        }
+        String prefix = device.config.get("boardPrefix");
+        NodeInventory.NodeRecord known = nodeInventory.findByEndpoint(device.port);
+        if (known == null) {
+            known = nodeInventory.findByEndpoint(NodeSupport.barePort(device.port));
+        }
+        if ((prefix == null || prefix.isBlank()) && known != null) {
+            prefix = known.prefix;
+        }
+        String version = known != null ? known.firmwareVersion : null;
+        return ProbeResult.node(prefix, BoardProfile.normalize(hintedType), version);
     }
 
     private static void sleepQuietly(long ms) {
@@ -355,16 +424,19 @@ public final class DccIoServiceImpl implements DccIoService {
     }
 
     private void applyProbeResult(DeviceDiscoveryService.DetectedDevice device, ProbeResult result) {
-        if (result.type == DeviceType.SENSOR_BOARD) {
-            device.systemType = DeviceDiscoveryService.SYSTEM_TYPE_SENSOR_BOARD;
-            device.name = "PanelsDCC Sensor Board";
+        if (result.type == DeviceType.NODE) {
+            device.systemType = DeviceDiscoveryService.SYSTEM_TYPE_NODE;
+            device.name = "PanelsDCC Node";
             device.needsProbe = false;
-            device.config.put("baudRate", String.valueOf(UsbSerialProbe.SENSOR_BAUD));
+            device.config.put("baudRate", String.valueOf(UsbSerialProbe.NODE_BAUD));
             if (result.prefix != null) {
                 device.config.put("boardPrefix", result.prefix);
             }
             if (result.boardType != null) {
                 device.config.put("boardType", BoardProfile.normalize(result.boardType));
+            }
+            if (result.firmwareVersion != null) {
+                device.config.put("firmwareVersion", String.valueOf(result.firmwareVersion));
             }
         } else if (result.type == DeviceType.DCCPP) {
             device.systemType = DeviceDiscoveryService.SYSTEM_TYPE_DCCPP;
@@ -393,70 +465,139 @@ public final class DccIoServiceImpl implements DccIoService {
         }
     }
 
-    private void startSensorBoard(DeviceDiscoveryService.DetectedDevice device) {
-        String sessionId = "sensor_" + device.port.replace("/", "_").replace("\\", "_");
-        if (sensorSessions.containsKey(sessionId)) {
-            connectedPorts.add(device.port);
-            portToConnectionId.put(device.port, sessionId);
-            return;
+    private void startNode(DeviceDiscoveryService.DetectedDevice device) {
+        UsbNodeSession session;
+        synchronized (usbProbeLock) {
+            if (isFlashingPort(device.port) || sensorPortReleased(device.port)) {
+                return;
+            }
+            String sessionId = "sensor_" + device.port.replace("/", "_").replace("\\", "_");
+            if (nodeSessions.containsKey(sessionId)) {
+                connectedPorts.add(device.port);
+                portToConnectionId.put(device.port, sessionId);
+                return;
+            }
+            fillIdentityFromInventory(device);
+            String prefix = device.config.get("boardPrefix");
+            String boardType = BoardProfile.normalize(device.config.get("boardType"));
+            session = new UsbNodeSession(
+                    device.port,
+                    prefix,
+                    device.byPath,
+                    boardType,
+                    () -> sensorHardwarePublisher);
+            try {
+                session.start();
+                nodeSessions.put(sessionId, session);
+                connectedPorts.add(device.port);
+                portToConnectionId.put(device.port, sessionId);
+            } catch (Exception e) {
+                System.err.println("Failed to start node on " + device.port + ": " + e.getMessage());
+                session.close();
+                return;
+            }
         }
-        fillIdentityFromInventory(device);
-        String prefix = device.config.get("boardPrefix");
-        String boardType = BoardProfile.normalize(device.config.get("boardType"));
-        SensorBoardSession session = new SensorBoardSession(
-                device.port,
-                prefix,
-                device.byPath,
-                boardType,
-                () -> sensorHardwarePublisher);
-        try {
-            session.start();
-            sensorSessions.put(sessionId, session);
-            connectedPorts.add(device.port);
-            portToConnectionId.put(device.port, sessionId);
-            rememberUsbNode(session);
-        } catch (Exception e) {
-            System.err.println("Failed to start sensor board on " + device.port + ": " + e.getMessage());
-            session.close();
-        }
+        rememberUsbNode(session);
     }
 
-    private void rememberUsbNode(SensorBoardSession session) {
+    private void rememberUsbNode(UsbNodeSession session) {
+        boolean skipCfgPush = session.getPrefix() != null
+                && skipCfgPushPrefixes.remove(session.getPrefix());
         NodeInventory.NodeRecord rec = new NodeInventory.NodeRecord();
         rec.id = session.getId();
         rec.prefix = session.getPrefix();
         rec.boardType = session.getBoardType();
-        rec.transport = SensorBoardSupport.TRANSPORT_USB;
+        rec.transport = NodeSupport.TRANSPORT_USB;
         rec.endpoint = session.getEndpoint();
         NodeInventory.NodeRecord existing = nodeInventory.findByPrefix(session.getPrefix());
         if (existing != null) {
-            rec.pins = existing.pins;
-            rec.outputs = existing.outputs;
-            rec.opticalDistricts = existing.opticalDistricts;
-            rec.config = existing.config;
+            if (!skipCfgPush) {
+                rec.pins = existing.pins;
+                rec.outputs = existing.outputs;
+                rec.opticalDistricts = existing.opticalDistricts;
+                rec.config = existing.config;
+            } else {
+                // Keep the empty layout written by flashNode(clearConfig).
+                rec.pins = existing.pins;
+                rec.outputs = existing.outputs;
+                rec.opticalDistricts = existing.opticalDistricts;
+                rec.config = existing.config;
+            }
+            if (existing.firmwareVersion != null) {
+                rec.firmwareVersion = existing.firmwareVersion;
+            }
         }
         nodeInventory.upsert(rec);
-        // Re-push CFG after USB reconnect (board may have EEPROM; Connect is source of truth).
-        // Delay so AVR reset/boot finishes before the serial line is written.
-        if (rec.config != null) {
-            final String sessionId = session.getId();
-            final JsonObject cfg = rec.config.deepCopy();
-            final JsonArray outs = rec.outputs != null ? rec.outputs.deepCopy() : new JsonArray();
-            final String prefix = session.getPrefix();
-            deviceMonitor.schedule(() -> {
-                SensorBoardSession live = sensorSessions.get(sessionId);
-                if (live == null || !live.isRunning()) {
-                    return;
+        // Opening the port resets an AVR Nano. Ask the board for its configuration
+        // after boot. A baked image answers from program storage. A generic image
+        // with an empty EEPROM still receives the inventory Connect already has.
+        final String sessionId = session.getId();
+        final String prefix = session.getPrefix();
+        final JsonObject savedCfg = (skipCfgPush || rec.config == null) ? null : rec.config.deepCopy();
+        final JsonArray savedOuts = (!skipCfgPush && rec.outputs != null)
+                ? rec.outputs.deepCopy() : new JsonArray();
+        deviceMonitor.schedule(
+                () -> pullCfgOrPushSaved(sessionId, prefix, savedCfg, savedOuts),
+                2, TimeUnit.SECONDS);
+    }
+
+    private void pullCfgOrPushSaved(String sessionId, String prefix, JsonObject savedCfg, JsonArray savedOuts) {
+        UsbNodeSession live = nodeSessions.get(sessionId);
+        if (live == null || !live.isRunning()) {
+            return;
+        }
+        try {
+            refreshFirmwareVersion(live, sessionId, prefix);
+            String reply = live.sendCommandAwaitReply("CFG?", "CFG", 8000L);
+            JsonObject fromBoard = NodeCfgDocument.parse(reply);
+            if (fromBoard != null) {
+                NodeInventory.NodeRecord rec = nodeInventory.findById(sessionId);
+                if (rec == null) {
+                    rec = nodeInventory.findByPrefix(prefix);
                 }
-                try {
-                    live.sendCommand("CFG " + cfg);
-                    nodeOutputMirror.syncConfig(prefix, outs);
-                } catch (Exception e) {
-                    System.err.println("Failed to re-push CFG to " + sessionId + ": " + e.getMessage());
+                if (rec != null) {
+                    NodeCfgDocument.copyOnto(rec, fromBoard);
+                    nodeInventory.upsert(rec);
+                    nodeOutputMirror.syncConfig(prefix, rec.outputs != null ? rec.outputs : new JsonArray());
                 }
-            }, 2, TimeUnit.SECONDS);
-        } else if (rec.outputs != null) {
-            nodeOutputMirror.syncConfig(session.getPrefix(), rec.outputs);
+                return;
+            }
+            if (savedCfg != null) {
+                live.sendCommand("CFG " + savedCfg);
+                nodeOutputMirror.syncConfig(prefix, savedOuts);
+            }
+        } catch (Exception e) {
+            System.err.println("Failed to read CFG from " + sessionId + ": " + e.getMessage());
+        }
+    }
+
+    private void refreshFirmwareVersion(UsbNodeSession live, String sessionId, String prefix) {
+        try {
+            String reply = live.sendCommandAwaitReply("ID?", "ID", 3000L);
+            if (reply == null) {
+                return;
+            }
+            Matcher m = Pattern.compile("^ID ([A-Za-z]{1,2}) (\\S+)(?: (\\d{4}-\\d{2}-\\d{2}|\\d+(?:\\.\\d+)*))?\\s*$")
+                    .matcher(reply.trim());
+            if (!m.matches()) {
+                return;
+            }
+            NodeInventory.NodeRecord rec = nodeInventory.findById(sessionId);
+            if (rec == null) {
+                rec = nodeInventory.findByPrefix(prefix);
+            }
+            if (rec == null) {
+                return;
+            }
+            if (m.group(2) != null && BoardProfile.isValid(m.group(2))) {
+                rec.boardType = BoardProfile.normalize(m.group(2));
+            }
+            if (m.group(3) != null) {
+                rec.firmwareVersion = m.group(3);
+            }
+            nodeInventory.upsert(rec);
+        } catch (Exception e) {
+            System.err.println("Failed to read ID from " + sessionId + ": " + e.getMessage());
         }
     }
 
@@ -484,15 +625,15 @@ public final class DccIoServiceImpl implements DccIoService {
         List<DeviceDiscoveryService.DetectedDevice> devices = discoveryService.discoverDevices();
         for (DeviceDiscoveryService.DetectedDevice device : devices) {
             // Live sensor session
-            for (SensorBoardSession session : sensorSessions.values()) {
+            for (UsbNodeSession session : nodeSessions.values()) {
                 if (device.port.equals(session.getPortName())) {
-                    device.systemType = DeviceDiscoveryService.SYSTEM_TYPE_SENSOR_BOARD;
-                    device.name = "PanelsDCC Sensor Board";
+                    device.systemType = DeviceDiscoveryService.SYSTEM_TYPE_NODE;
+                    device.name = "PanelsDCC Node";
                     device.needsProbe = false;
                     if (session.getPrefix() != null) {
                         device.config.put("boardPrefix", session.getPrefix());
                     }
-                    device.config.put("baudRate", String.valueOf(UsbSerialProbe.SENSOR_BAUD));
+                    device.config.put("baudRate", String.valueOf(UsbSerialProbe.NODE_BAUD));
                     break;
                 }
             }
@@ -514,12 +655,12 @@ public final class DccIoServiceImpl implements DccIoService {
             if (device.needsProbe && device.byPath != null) {
                 UsbProbeCache.Entry cached = probeCache.get(device.byPath);
                 if (cached != null) {
-                    if (DeviceDiscoveryService.SYSTEM_TYPE_SENSOR_BOARD.equals(cached.type)) {
-                        device.name = "PanelsDCC Sensor Board (cached)";
+                    if (DeviceDiscoveryService.SYSTEM_TYPE_NODE.equals(cached.type)) {
+                        device.name = "PanelsDCC Node (cached)";
                         if (cached.prefix != null) {
                             device.config.put("boardPrefix", cached.prefix);
                         }
-                        device.config.put("baudRate", String.valueOf(UsbSerialProbe.SENSOR_BAUD));
+                        device.config.put("baudRate", String.valueOf(UsbSerialProbe.NODE_BAUD));
                         device.config.put("cachedType", cached.type);
                     } else if (DeviceDiscoveryService.SYSTEM_TYPE_DCCPP.equals(cached.type)) {
                         device.name = "DCC++ CH340 (cached)";
@@ -532,22 +673,61 @@ public final class DccIoServiceImpl implements DccIoService {
         return devices;
     }
 
-    public Collection<SensorBoardSession> getSensorSessions() {
-        return Collections.unmodifiableCollection(sensorSessions.values());
+    public Collection<UsbNodeSession> getNodeSessions() {
+        return Collections.unmodifiableCollection(nodeSessions.values());
     }
 
-    public SensorBoardFlasher getSensorFlasher() {
-        return sensorFlasher;
+    public NodeFlasher getNodeFlasher() {
+        return nodeFlasher;
+    }
+
+    /**
+     * Arduinos for the Flash USB port menu: port, board type, and label.
+     * Command-station and debug ports stay on {@code /api/ports}.
+     */
+    public JsonObject flashPortsJson() {
+        Map<String, String> sessions = new HashMap<>();
+        Set<String> nodePorts = new HashSet<>();
+        for (UsbNodeSession session : nodeSessions.values()) {
+            String bare = NodeSupport.barePort(session.getPortName());
+            if (bare == null) {
+                continue;
+            }
+            nodePorts.add(bare);
+            if (BoardProfile.isValid(session.getBoardType())) {
+                sessions.put(bare, session.getBoardType());
+            }
+        }
+        Set<String> commandStations = new HashSet<>();
+        for (String port : portToConnectionId.keySet()) {
+            String bare = NodeSupport.barePort(port);
+            if (bare != null && !nodePorts.contains(bare)) {
+                commandStations.add(bare);
+            }
+        }
+        commandStations.addAll(flashingPortKeys);
+        JsonArray arr = new JsonArray();
+        for (FlashPortScanner.ListedPort listed : flashPortScanner.list(
+                FlashPortScanner.readLivePorts(), sessions, commandStations)) {
+            JsonObject row = new JsonObject();
+            row.addProperty("port", listed.port);
+            row.addProperty("boardType", listed.boardType);
+            row.addProperty("label", listed.label);
+            arr.add(row);
+        }
+        JsonObject root = new JsonObject();
+        root.add("ports", arr);
+        return root;
     }
 
     public JsonObject listSensorsJson() {
         JsonArray boards = new JsonArray();
         Set<String> seenPorts = new HashSet<>();
 
-        for (Map.Entry<String, SensorBoardSession> e : sensorSessions.entrySet()) {
-            SensorBoardSession s = e.getValue();
+        for (Map.Entry<String, UsbNodeSession> e : nodeSessions.entrySet()) {
+            UsbNodeSession s = e.getValue();
             JsonObject row = boardRow(s.getId(), s.getTransport(), s.getEndpoint(), s.getPrefix(),
-                    s.getBoardType(), SensorBoardSupport.STATUS_LISTENING, false);
+                    s.getBoardType(), NodeSupport.STATUS_LISTENING, false);
             if (s.getByPath() != null) {
                 row.addProperty("byPath", s.getByPath());
             }
@@ -556,12 +736,12 @@ public final class DccIoServiceImpl implements DccIoService {
             }
             attachInventory(row, s.getPrefix());
             boards.add(row);
-            seenPorts.add(SensorBoardSupport.barePort(s.getPortName()));
+            seenPorts.add(NodeSupport.barePort(s.getPortName()));
         }
 
         for (VirtualNodeSession shim : shimSessions.values()) {
             JsonObject row = boardRow(shim.getId(), shim.getTransport(), shim.getEndpoint(), shim.getPrefix(),
-                    shim.getBoardType(), SensorBoardSupport.STATUS_LISTENING, true);
+                    shim.getBoardType(), NodeSupport.STATUS_LISTENING, true);
             row.add("channels", shim.channelsJson());
             attachInventory(row, shim.getPrefix());
             if (row.has("channels") && row.has("outputs")) {
@@ -572,7 +752,7 @@ public final class DccIoServiceImpl implements DccIoService {
         }
 
         for (ReleasedSensorPort r : releasedSensorPorts.values()) {
-            String bare = SensorBoardSupport.barePort(r.port);
+            String bare = NodeSupport.barePort(r.port);
             if (seenPorts.contains(bare)) {
                 continue;
             }
@@ -582,14 +762,14 @@ public final class DccIoServiceImpl implements DccIoService {
                 boardType = inv.boardType;
             }
             String flashPort = null;
-            JsonObject flashStatus = sensorFlasher.statusJson();
+            JsonObject flashStatus = nodeFlasher.statusJson();
             if (flashStatus.has("port")) {
                 flashPort = flashStatus.get("port").getAsString();
             }
-            String status = sensorFlasher.isBusy() && bare.equals(SensorBoardSupport.barePort(flashPort))
-                    ? SensorBoardSupport.STATUS_FLASHING
-                    : SensorBoardSupport.STATUS_RELEASED;
-            JsonObject row = boardRow(r.id, SensorBoardSupport.TRANSPORT_USB, r.port, r.prefix,
+            String status = nodeFlasher.isBusy() && bare.equals(NodeSupport.barePort(flashPort))
+                    ? NodeSupport.STATUS_FLASHING
+                    : NodeSupport.STATUS_RELEASED;
+            JsonObject row = boardRow(r.id, NodeSupport.TRANSPORT_USB, r.port, r.prefix,
                     boardType, status, false);
             if (r.byPath != null) {
                 row.addProperty("byPath", r.byPath);
@@ -603,9 +783,8 @@ public final class DccIoServiceImpl implements DccIoService {
 
         JsonArray candidates = new JsonArray();
         for (DeviceDiscoveryService.DetectedDevice device : discoveryService.discoverDevices()) {
-            String bare = SensorBoardSupport.barePort(device.port);
-            if (seenPorts.contains(bare) || releasedSensorPorts.containsKey(bare)
-                    || releasedSensorPorts.containsKey(device.port)) {
+            String bare = NodeSupport.barePort(device.port);
+            if (seenPorts.contains(bare) || sensorPortReleased(device.port) || isFlashingPort(device.port)) {
                 continue;
             }
             if (connectedPorts.contains(device.port) || connectedPorts.contains(bare)) {
@@ -680,18 +859,18 @@ public final class DccIoServiceImpl implements DccIoService {
 
         JsonArray transports = new JsonArray();
         JsonObject usb = new JsonObject();
-        usb.addProperty("id", SensorBoardSupport.TRANSPORT_USB);
+        usb.addProperty("id", NodeSupport.TRANSPORT_USB);
         usb.addProperty("available", true);
         usb.addProperty("label", "USB (Nano / Mega AVR)");
         transports.add(usb);
         JsonObject shim = new JsonObject();
-        shim.addProperty("id", SensorBoardSupport.TRANSPORT_SHIM);
+        shim.addProperty("id", NodeSupport.TRANSPORT_SHIM);
         shim.addProperty("available", true);
         shim.addProperty("label", "Virtual (UI testing)");
         shim.addProperty("note", "In-process shim boards — no hardware required");
         transports.add(shim);
         JsonObject wifi = new JsonObject();
-        wifi.addProperty("id", SensorBoardSupport.TRANSPORT_WIFI);
+        wifi.addProperty("id", NodeSupport.TRANSPORT_WIFI);
         wifi.addProperty("available", false);
         wifi.addProperty("label", "Wi‑Fi (ESP32)");
         wifi.addProperty("note", "Later — use Bluetooth SPP for ESP32 nodes");
@@ -723,6 +902,7 @@ public final class DccIoServiceImpl implements DccIoService {
     private void attachInventory(JsonObject row, String prefix) {
         NodeInventory.NodeRecord rec = nodeInventory.findByPrefix(prefix);
         if (rec == null) {
+            attachImageVersions(row, row.has("boardType") ? row.get("boardType").getAsString() : null, null);
             return;
         }
         if (rec.outputs != null) {
@@ -745,6 +925,34 @@ public final class DccIoServiceImpl implements DccIoService {
         row.add("outputStates", states);
         row.addProperty("outputStatesMirrored", true);
         row.addProperty("outputAnimating", nodeOutputMirror.isAnimating(prefix));
+        String boardType = rec.boardType != null
+                ? rec.boardType
+                : (row.has("boardType") ? row.get("boardType").getAsString() : null);
+        attachImageVersions(row, boardType, rec.firmwareVersion);
+    }
+
+    private void attachImageVersions(JsonObject row, String boardType, String firmwareVersion) {
+        String boardVer = null;
+        if (firmwareVersion != null && !firmwareVersion.isBlank()) {
+            boardVer = firmwareVersion.trim();
+            row.addProperty("firmwareVersion", boardVer);
+        }
+        if (boardType == null || boardType.isBlank()) {
+            return;
+        }
+        nodeFlasher.catalog().select(boardType).ifPresent(image -> {
+            row.addProperty("shippedVersion", image.version);
+            row.addProperty("imageSource", image.source);
+        });
+        if (row.has("shippedVersion") && boardVer != null) {
+            row.addProperty("updateAvailable",
+                    ImageVersions.compare(boardVer, row.get("shippedVersion").getAsString()) < 0);
+        } else if (row.has("shippedVersion") && boardVer == null) {
+            // Unknown on-board version (old image without ID version) — offer Update.
+            row.addProperty("updateAvailable", true);
+        } else if (boardVer != null) {
+            row.addProperty("updateAvailable", false);
+        }
     }
 
     private void ensureMirrorSynced(String prefix, JsonArray outputs) {
@@ -769,14 +977,14 @@ public final class DccIoServiceImpl implements DccIoService {
 
     /**
      * Manually probe a USB-serial candidate (clears cooldown). Starts a sensor
-     * session when classification succeeds as a sensor board.
+     * session when classification succeeds as a node.
      */
     public JsonObject probeUsbSerial(String portName) {
         if (portName == null || portName.trim().isEmpty()) {
             throw new IllegalArgumentException("port required");
         }
-        String bare = SensorBoardSupport.barePort(portName.trim());
-        String path = SensorBoardSupport.devicePath(bare);
+        String bare = NodeSupport.barePort(portName.trim());
+        String path = NodeSupport.devicePath(bare);
 
         probeCooldownUntil.remove(bare);
         probeCooldownUntil.remove(path);
@@ -784,7 +992,7 @@ public final class DccIoServiceImpl implements DccIoService {
 
         DeviceDiscoveryService.DetectedDevice match = null;
         for (DeviceDiscoveryService.DetectedDevice device : discoveryService.discoverDevices()) {
-            String dBare = SensorBoardSupport.barePort(device.port);
+            String dBare = NodeSupport.barePort(device.port);
             if (bare.equals(dBare) || path.equals(device.port) || portName.trim().equals(device.port)) {
                 match = device;
                 break;
@@ -806,10 +1014,16 @@ public final class DccIoServiceImpl implements DccIoService {
         JsonObject out = new JsonObject();
         out.addProperty("port", match.port);
 
-        for (SensorBoardSession session : sensorSessions.values()) {
-            if (bare.equals(SensorBoardSupport.barePort(session.getPortName()))) {
+        if (isFlashingPort(bare) || sensorPortReleased(bare)) {
+            out.addProperty("ok", false);
+            out.addProperty("error", "Port is held for flashing — wait until flash finishes");
+            return out;
+        }
+
+        for (UsbNodeSession session : nodeSessions.values()) {
+            if (bare.equals(NodeSupport.barePort(session.getPortName()))) {
                 out.addProperty("ok", true);
-                out.addProperty("systemType", DeviceDiscoveryService.SYSTEM_TYPE_SENSOR_BOARD);
+                out.addProperty("systemType", DeviceDiscoveryService.SYSTEM_TYPE_NODE);
                 out.addProperty("listening", true);
                 out.addProperty("alreadyListening", true);
                 if (session.getPrefix() != null) {
@@ -827,16 +1041,16 @@ public final class DccIoServiceImpl implements DccIoService {
             out.addProperty("prefix", match.config.get("boardPrefix"));
         }
 
-        if (ok && DeviceDiscoveryService.SYSTEM_TYPE_SENSOR_BOARD.equals(match.systemType)) {
+        if (ok && DeviceDiscoveryService.SYSTEM_TYPE_NODE.equals(match.systemType)) {
             releasedSensorPorts.remove(bare);
             releasedSensorPorts.remove(match.port);
-            startSensorBoard(match);
-            out.addProperty("listening", sensorSessions.containsKey(
-                    SensorBoardSupport.sessionIdForPort(match.port)));
+            startNode(match);
+            out.addProperty("listening", nodeSessions.containsKey(
+                    NodeSupport.sessionIdForPort(match.port)));
         } else if (ok && DeviceDiscoveryService.SYSTEM_TYPE_DCCPP.equals(match.systemType)) {
             out.addProperty("note", "Classified as DCC++ — connect from the DCC page if needed");
         } else {
-            out.addProperty("error", "Probe did not match a sensor board or DCC++ identity");
+            out.addProperty("error", "Probe did not match a node or DCC++ identity");
         }
         return out;
     }
@@ -844,8 +1058,8 @@ public final class DccIoServiceImpl implements DccIoService {
     /**
      * Release a sensor session so the tty can be flashed or used externally.
      */
-    public void releaseSensorBoard(String sessionId) {
-        SensorBoardSession session = sensorSessions.get(sessionId);
+    public void releaseNode(String sessionId) {
+        UsbNodeSession session = nodeSessions.get(sessionId);
         if (session == null) {
             // Allow releasing by port-derived id even if already released
             ReleasedSensorPort existing = findReleasedById(sessionId);
@@ -855,31 +1069,31 @@ public final class DccIoServiceImpl implements DccIoService {
             throw new IllegalArgumentException("Sensor board not found: " + sessionId);
         }
         String port = session.getPortName();
-        String bare = SensorBoardSupport.barePort(port);
+        String bare = NodeSupport.barePort(port);
         ReleasedSensorPort held = new ReleasedSensorPort(
                 sessionId, bare, session.getPrefix(), session.getByPath());
         removeSensorSession(sessionId);
         releasedSensorPorts.put(bare, held);
-        System.out.println("Released sensor board port " + bare + " for flashing/manual use");
+        System.out.println("Released node port " + bare + " for flashing/manual use");
     }
 
     /**
      * Resume listening on a previously released sensor port.
      */
-    public void resumeSensorBoard(String sessionId) throws IOException {
+    public void resumeNode(String sessionId) throws IOException {
         ReleasedSensorPort held = findReleasedById(sessionId);
         if (held == null) {
-            if (sensorSessions.containsKey(sessionId)) {
+            if (nodeSessions.containsKey(sessionId)) {
                 return; // already listening
             }
-            throw new IllegalArgumentException("No released sensor board: " + sessionId);
+            throw new IllegalArgumentException("No released node: " + sessionId);
         }
         String bare = held.port;
         releasedSensorPorts.remove(bare);
         DeviceDiscoveryService.DetectedDevice device = new DeviceDiscoveryService.DetectedDevice();
         device.port = bare;
-        device.systemType = DeviceDiscoveryService.SYSTEM_TYPE_SENSOR_BOARD;
-        device.name = "PanelsDCC Sensor Board";
+        device.systemType = DeviceDiscoveryService.SYSTEM_TYPE_NODE;
+        device.name = "PanelsDCC Node";
         device.byPath = held.byPath;
         if (held.prefix != null) {
             device.config.put("boardPrefix", held.prefix);
@@ -892,66 +1106,220 @@ public final class DccIoServiceImpl implements DccIoService {
             device.config.put("boardType", known.boardType);
         }
         // Prefer live probe to refresh prefix
-        UsbSerialProbe.ProbeResult result = usbProbe.verifySensorBoard(bare);
-        if (result.type == UsbSerialProbe.DeviceType.SENSOR_BOARD) {
+        UsbSerialProbe.ProbeResult result = usbProbe.verifyNode(bare);
+        if (result.type == UsbSerialProbe.DeviceType.NODE) {
             applyProbeResult(device, result);
             if (device.byPath != null) {
                 probeCache.put(device.byPath, device.systemType, result.prefix);
             }
         } else if (held.prefix == null) {
-            throw new IOException("Port " + bare + " did not respond as a PanelsDCC Sensor Board");
+            throw new IOException("Port " + bare + " did not respond as a PanelsDCC Node");
         }
-        startSensorBoard(device);
+        startNode(device);
     }
 
-    public synchronized boolean flashSensorBoard(String portName, String prefix) {
-        return flashSensorBoard(portName, prefix, BoardProfile.NANO_AVR);
+    public synchronized boolean flashNode(String portName, String prefix) {
+        return flashNode(portName, prefix, BoardProfile.NANO_AVR, false);
     }
 
-    public synchronized boolean flashSensorBoard(String portName, String prefix, String boardType) {
-        String type = BoardProfile.normalize(boardType);
-        String bare = SensorBoardSupport.barePort(portName);
-        String sessionId = SensorBoardSupport.sessionIdForPort(bare);
-        if (sensorSessions.containsKey(sessionId)) {
-            releaseSensorBoard(sessionId);
-        } else if (!releasedSensorPorts.containsKey(bare)) {
-            ReleasedSensorPort held = new ReleasedSensorPort(sessionId, bare, prefix, null);
-            releasedSensorPorts.put(bare, held);
-        } else {
-            ReleasedSensorPort prev = releasedSensorPorts.get(bare);
-            releasedSensorPorts.put(bare, new ReleasedSensorPort(
-                    prev.id, bare, prefix != null ? prefix : prev.prefix, prev.byPath));
+    public synchronized boolean flashNode(String portName, String prefix, String boardType) {
+        return flashNode(portName, prefix, boardType, false);
+    }
+
+    public synchronized boolean flashNode(
+            String portName, String prefix, String boardType, boolean clearConfig) {
+        String type = NodeFlasher.isDetect(boardType) ? NodeFlasher.DETECT : BoardProfile.normalize(boardType);
+        // Baked Nano AVR has no runtime CFG to clear.
+        if (clearConfig && BoardProfile.NANO_AVR.equals(type)) {
+            clearConfig = false;
+        }
+        String bare = NodeSupport.barePort(portName);
+        String sessionId = NodeSupport.sessionIdForPort(bare);
+        String deviceKey = NodeSupport.serialDeviceKey(bare);
+        synchronized (usbProbeLock) {
+            // Flash hold first: probe / auto-bind must not reopen this USB device.
+            if (deviceKey != null) {
+                flashingPortKeys.add(deviceKey);
+            }
+            // Soft enter download mode while we still own the session (buried boards).
+            maybeRequestEspBootloader(bare, type);
+            releaseSessionsForFlash(bare, prefix, sessionId);
+            // USB-CDC needs longer than UART bridges before a follow-up 1200 touch.
+            sleepQuietly(800L);
         }
 
         NodeInventory.NodeRecord previous = nodeInventory.findById(sessionId);
+        if (previous == null) {
+            previous = nodeInventory.findByPrefix(NodeSupport.normalizePrefix(prefix));
+        }
         NodeInventory.NodeRecord rec = new NodeInventory.NodeRecord();
         rec.id = sessionId;
-        rec.prefix = SensorBoardSupport.normalizePrefix(prefix);
-        rec.boardType = type;
-        rec.transport = SensorBoardSupport.TRANSPORT_USB;
+        rec.prefix = NodeSupport.normalizePrefix(prefix);
+        rec.boardType = NodeFlasher.DETECT.equals(type)
+                ? (previous == null ? null : previous.boardType)
+                : type;
+        rec.transport = NodeSupport.TRANSPORT_USB;
         rec.endpoint = bare;
-        if (previous != null) {
+        if (previous != null && !clearConfig) {
             rec.pins = previous.pins;
             rec.outputs = previous.outputs;
             rec.opticalDistricts = previous.opticalDistricts;
             rec.config = previous.config;
+            rec.firmwareVersion = previous.firmwareVersion;
+        } else if (clearConfig) {
+            rec.pins = null;
+            rec.outputs = null;
+            rec.opticalDistricts = null;
+            rec.config = null;
+            nodeOutputMirror.syncConfig(rec.prefix, new JsonArray());
         }
         nodeInventory.upsert(rec);
 
-        return sensorFlasher.startFlash(bare, prefix, type, success -> {
-            if (success) {
-                try {
+        final boolean wipeConfig = clearConfig;
+        boolean started = nodeFlasher.startFlash(bare, prefix, type, wipeConfig, success -> {
+            if (deviceKey != null) {
+                flashingPortKeys.remove(deviceKey);
+            }
+            try {
+                if (success) {
+                    String detected = nodeFlasher.currentBoardType();
+                    NodeInventory.NodeRecord written = nodeInventory.findById(sessionId);
+                    if (written == null) {
+                        written = nodeInventory.findByPrefix(NodeSupport.normalizePrefix(prefix));
+                    }
+                    if (written != null) {
+                        if (BoardProfile.isValid(detected)) {
+                            written.boardType = detected;
+                        }
+                        String imageType = written.boardType != null ? written.boardType : detected;
+                        if (BoardProfile.isValid(imageType)) {
+                            var image = nodeFlasher.catalog().select(imageType);
+                            if (image.isPresent()) {
+                                written.firmwareVersion = image.get().version;
+                            }
+                        }
+                        nodeInventory.upsert(written);
+                    }
                     ReleasedSensorPort held = releasedSensorPorts.get(bare);
                     if (held != null) {
                         releasedSensorPorts.put(bare, new ReleasedSensorPort(
-                                held.id, bare, SensorBoardSupport.normalizePrefix(prefix), held.byPath));
+                                held.id, bare, NodeSupport.normalizePrefix(prefix), held.byPath));
                     }
-                    resumeSensorBoard(sessionId);
-                } catch (Exception e) {
-                    System.err.println("Flash succeeded but resume failed on " + bare + ": " + e.getMessage());
                 }
+                if (wipeConfig) {
+                    skipCfgPushPrefixes.add(NodeSupport.normalizePrefix(prefix));
+                }
+                resumeNode(sessionId);
+            } catch (Exception e) {
+                System.err.println((success
+                        ? "Flash succeeded but the node did not restart on "
+                        : "Flash stopped and the node was not restarted on ")
+                        + bare + ": " + e.getMessage());
             }
         });
+        if (!started && deviceKey != null) {
+            flashingPortKeys.remove(deviceKey);
+            try {
+                resumeNode(sessionId);
+            } catch (Exception e) {
+                System.err.println("Could not restart the node on " + bare + ": " + e.getMessage());
+            }
+        }
+        return started;
+    }
+
+    /**
+     * Ask a live ESP32 node to soft-enter ROM download mode before we drop the session.
+     * Older images without {@code BOOTLOADER} are left alone; 1200-baud follows under flash-hold.
+     */
+    private void maybeRequestEspBootloader(String bare, String boardType) {
+        // Soft BOOTLOADER is for native-USB ESP32-S3 (Nano ESP32). Mega ESP32 uses UART DTR/RTS.
+        String type = BoardProfile.normalize(boardType);
+        String key = NodeSupport.serialDeviceKey(bare);
+        UsbNodeSession session = null;
+        for (UsbNodeSession s : nodeSessions.values()) {
+            if (bare.equals(NodeSupport.barePort(s.getPortName()))
+                    || (key != null && key.equals(NodeSupport.serialDeviceKey(s.getPortName())))) {
+                session = s;
+                break;
+            }
+        }
+        if (session == null) {
+            return;
+        }
+        String sessionType = BoardProfile.normalize(session.getBoardType());
+        boolean nanoEsp = BoardProfile.NANO_ESP32.equals(type)
+                || BoardProfile.NANO_ESP32.equals(sessionType);
+        if (!nanoEsp) {
+            return;
+        }
+        System.out.println("Requesting BOOTLOADER on " + session.getPortName()
+                + " (" + sessionType + ") before flash");
+        session.sendCommand("BOOTLOADER");
+        sleepQuietly(250L);
+    }
+
+    /**
+     * Close every live session on this USB device, including a session stored under a different id.
+     * Marks the port released so monitoring does not open it again while esptool or avrdude runs.
+     */
+    private void releaseSessionsForFlash(String bare, String prefix, String sessionId) {
+        String key = NodeSupport.serialDeviceKey(bare);
+        List<String> ids = new ArrayList<>();
+        for (Map.Entry<String, UsbNodeSession> entry : nodeSessions.entrySet()) {
+            UsbNodeSession session = entry.getValue();
+            boolean sameDevice = key != null && key.equals(NodeSupport.serialDeviceKey(session.getPortName()));
+            if (sameDevice || entry.getKey().equals(sessionId) || sessionId.equals(session.getId())) {
+                ids.add(entry.getKey());
+            }
+        }
+        String keptPrefix = prefix;
+        String byPath = null;
+        String keptId = sessionId;
+        for (String id : ids) {
+            UsbNodeSession session = nodeSessions.get(id);
+            if (session == null) {
+                continue;
+            }
+            if (keptPrefix == null || keptPrefix.isBlank()) {
+                keptPrefix = session.getPrefix();
+            }
+            if (session.getByPath() != null) {
+                byPath = session.getByPath();
+            }
+            keptId = id;
+            removeSensorSession(id);
+            System.out.println("Released node port " + session.getPortName() + " so it can be flashed");
+        }
+        ReleasedSensorPort prev = releasedSensorPorts.get(bare);
+        if (prev == null) {
+            prev = findReleasedById(sessionId);
+        }
+        if (byPath == null && prev != null) {
+            byPath = prev.byPath;
+        }
+        if ((keptPrefix == null || keptPrefix.isBlank()) && prev != null) {
+            keptPrefix = prev.prefix;
+        }
+        releasedSensorPorts.put(bare, new ReleasedSensorPort(keptId, bare, keptPrefix, byPath));
+    }
+
+    private boolean isFlashingPort(String port) {
+        String key = NodeSupport.serialDeviceKey(port);
+        return key != null && flashingPortKeys.contains(key);
+    }
+
+    private boolean sensorPortReleased(String port) {
+        String key = NodeSupport.serialDeviceKey(port);
+        if (key == null) {
+            return false;
+        }
+        for (String held : releasedSensorPorts.keySet()) {
+            if (key.equals(NodeSupport.serialDeviceKey(held))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private ReleasedSensorPort findReleasedById(String sessionId) {
@@ -962,7 +1330,7 @@ public final class DccIoServiceImpl implements DccIoService {
         }
         // Also match sensor_<port>
         for (Map.Entry<String, ReleasedSensorPort> e : releasedSensorPorts.entrySet()) {
-            if (SensorBoardSupport.sessionIdForPort(e.getKey()).equals(sessionId)) {
+            if (NodeSupport.sessionIdForPort(e.getKey()).equals(sessionId)) {
                 return e.getValue();
             }
         }
@@ -993,7 +1361,7 @@ public final class DccIoServiceImpl implements DccIoService {
     }
 
     private void removeSensorSession(String sessionId) {
-        SensorBoardSession session = sensorSessions.remove(sessionId);
+        UsbNodeSession session = nodeSessions.remove(sessionId);
         if (session != null) {
             try {
                 session.close();
@@ -1255,12 +1623,12 @@ public final class DccIoServiceImpl implements DccIoService {
 
     public JsonObject createShimBoard(String prefix, String boardType) {
         String p = prefix != null && !prefix.isBlank()
-                ? SensorBoardSupport.normalizePrefix(prefix)
+                ? NodeSupport.normalizePrefix(prefix)
                 : nodeInventory.suggestPrefix();
-        if (!SensorBoardSupport.isValidPrefix(p)) {
+        if (!NodeSupport.isValidPrefix(p)) {
             throw new IllegalArgumentException("Invalid prefix: " + prefix);
         }
-        String shimId = SensorBoardSupport.sessionIdForShim(p);
+        String shimId = NodeSupport.sessionIdForShim(p);
         if (shimSessions.containsKey(shimId)) {
             removeShimBoard(shimId);
         }
@@ -1270,14 +1638,14 @@ public final class DccIoServiceImpl implements DccIoService {
         shimSessions.put(session.getId(), session);
         NodeInventory.NodeRecord rec = NodeInventory.NodeRecord.shim(p, type);
         nodeInventory.upsert(rec);
-        sensorFlasher.startShimFlash(p, type, ok -> {
+        nodeFlasher.startShimFlash(p, type, ok -> {
         });
         JsonObject out = new JsonObject();
         out.addProperty("ok", true);
         out.addProperty("id", session.getId());
         out.addProperty("prefix", p);
         out.addProperty("boardType", type);
-        out.addProperty("transport", SensorBoardSupport.TRANSPORT_SHIM);
+        out.addProperty("transport", NodeSupport.TRANSPORT_SHIM);
         return out;
     }
 
@@ -1314,10 +1682,60 @@ public final class DccIoServiceImpl implements DccIoService {
         return out;
     }
 
+    public JsonObject setNodePrefix(String id, String prefix) {
+        String next = NodeSupport.normalizePrefix(prefix);
+        if (!NodeSupport.isValidPrefix(next)) {
+            throw new IllegalArgumentException("Invalid prefix: " + prefix);
+        }
+        NodeSession session = findNodeSession(id);
+        if (session == null) {
+            throw new IllegalArgumentException("Node not found: " + id);
+        }
+        NodeInventory.NodeRecord taken = nodeInventory.findByPrefix(next);
+        if (taken != null && taken.id != null && !taken.id.equals(session.getId())) {
+            throw new IllegalStateException("Prefix " + next + " is already used");
+        }
+        String previous = session.getPrefix();
+        if (!next.equals(previous)) {
+            session.sendCommand(NodeFlasher.prefixCommand(next));
+            if (session instanceof UsbNodeSession) {
+                ((UsbNodeSession) session).setPrefix(next);
+            } else if (session instanceof VirtualNodeSession) {
+                ((VirtualNodeSession) session).setPrefix(next);
+            }
+            if (previous != null && !previous.isBlank()) {
+                nodeOutputMirror.remove(previous);
+            }
+        }
+        NodeInventory.NodeRecord rec = nodeInventory.findById(session.getId());
+        if (rec == null && previous != null) {
+            rec = nodeInventory.findByPrefix(previous);
+        }
+        if (rec == null) {
+            rec = new NodeInventory.NodeRecord();
+            rec.id = session.getId();
+            rec.boardType = session.getBoardType();
+            rec.transport = session.getTransport();
+            rec.endpoint = session.getEndpoint();
+        }
+        rec.prefix = next;
+        nodeInventory.upsert(rec);
+        nodeOutputMirror.syncConfig(next, rec.outputs != null ? rec.outputs : new JsonArray());
+        JsonObject out = new JsonObject();
+        out.addProperty("ok", true);
+        out.addProperty("prefix", next);
+        return out;
+    }
+
     public JsonObject pushNodeConfig(String id, JsonObject config) {
         NodeSession session = findNodeSession(id);
         if (session == null) {
             throw new IllegalArgumentException("Node not found: " + id);
+        }
+        if (BoardProfile.NANO_AVR.equals(BoardProfile.normalize(session.getBoardType()))
+                && !NodeSupport.TRANSPORT_SHIM.equals(session.getTransport())) {
+            throw new IllegalStateException(
+                    "This board cannot be dynamically configured. Build a new image and re-flash it.");
         }
         String line = "CFG " + config.toString();
         session.sendCommand(line);
@@ -1467,7 +1885,7 @@ public final class DccIoServiceImpl implements DccIoService {
 
     private List<NodeSession> allNodeSessions() {
         List<NodeSession> list = new ArrayList<>();
-        list.addAll(sensorSessions.values());
+        list.addAll(nodeSessions.values());
         list.addAll(shimSessions.values());
         return list;
     }
@@ -1476,7 +1894,7 @@ public final class DccIoServiceImpl implements DccIoService {
         if (id == null) {
             return null;
         }
-        SensorBoardSession usb = sensorSessions.get(id);
+        UsbNodeSession usb = nodeSessions.get(id);
         if (usb != null) {
             return usb;
         }
@@ -1497,7 +1915,7 @@ public final class DccIoServiceImpl implements DccIoService {
 
     public void restoreShimBoardsFromInventory() {
         for (NodeInventory.NodeRecord rec : nodeInventory.list()) {
-            if (!SensorBoardSupport.TRANSPORT_SHIM.equalsIgnoreCase(rec.transport)) {
+            if (!NodeSupport.TRANSPORT_SHIM.equalsIgnoreCase(rec.transport)) {
                 continue;
             }
             if (shimSessions.containsKey(rec.id)) {
@@ -1528,13 +1946,13 @@ public final class DccIoServiceImpl implements DccIoService {
             Thread.currentThread().interrupt();
         }
 
-        for (SensorBoardSession session : sensorSessions.values()) {
+        for (UsbNodeSession session : nodeSessions.values()) {
             try {
                 session.close();
             } catch (Exception ignore) {
             }
         }
-        sensorSessions.clear();
+        nodeSessions.clear();
         for (VirtualNodeSession shim : shimSessions.values()) {
             try {
                 shim.close();
@@ -1543,7 +1961,7 @@ public final class DccIoServiceImpl implements DccIoService {
         }
         shimSessions.clear();
         releasedSensorPorts.clear();
-        sensorFlasher.shutdown();
+        nodeFlasher.shutdown();
 
         for (ThrottleSession throttle : throttles.values()) {
             try {

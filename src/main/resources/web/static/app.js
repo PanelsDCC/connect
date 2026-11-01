@@ -1,7 +1,7 @@
 let systems = [];
 let ports = [];
 
-const PAGE_IDS = ['dcc', 'sensors', 'wifi', 'updates'];
+const PAGE_IDS = ['dcc', 'nodes', 'wifi', 'updates'];
 
 function parseLocationHash() {
   const raw = (window.location.hash || '#dcc').replace(/^#/, '');
@@ -29,7 +29,7 @@ function updatePageSectionState() {
     const isActive = section.getAttribute('data-page') === current;
     section.classList.toggle('is-active', isActive);
   });
-  if (current === 'sensors' && typeof syncNodesScreenFromHash === 'function') {
+  if (current === 'nodes' && typeof syncNodesScreenFromHash === 'function') {
     syncNodesScreenFromHash();
   }
 }
@@ -719,12 +719,12 @@ async function discoverDevices() {
           deviceDiv.style.cssText = 'margin: 5px 0; padding: 8px; background: white; border-radius: 3px; border: 1px solid #ddd;';
           const name = device.name || device.description;
           let actionHtml;
-          if (device.systemType === 'panelsdcc-sensor-board') {
-            actionHtml = '<a href="#sensors" class="btn btn-primary btn-small" style="display:inline-block;margin-top:5px;text-decoration:none;" onclick="setPageHash(\'#sensors\'); return false;">Open in Sensors</a>';
+          if (device.systemType === 'panelsdcc-node') {
+            actionHtml = '<a href="#nodes" class="btn btn-primary btn-small" style="display:inline-block;margin-top:5px;text-decoration:none;" onclick="setPageHash(\'#nodes\'); return false;">Open in Nodes</a>';
           } else if (device.systemType === 'usb-serial-candidate' || device.needsProbe) {
             const portEsc = String(device.port || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
             actionHtml = '<button type="button" class="btn btn-primary btn-small" style="margin-top:5px;" onclick="probeSensorPort(\'' + portEsc + '\', this)">Probe now</button>' +
-              ' <a href="#sensors" class="btn btn-secondary btn-small" style="display:inline-block;margin-top:5px;text-decoration:none;" onclick="setPageHash(\'#sensors\'); return false;">Sensors</a>';
+              ' <a href="#nodes" class="btn btn-secondary btn-small" style="display:inline-block;margin-top:5px;text-decoration:none;" onclick="setPageHash(\'#nodes\'); return false;">Nodes</a>';
           } else {
             actionHtml = '<button onclick="useDiscoveredDevice(\'' + device.port + '\', \'' + device.systemType + '\')" style="margin-top: 5px; padding: 5px 10px; background: #0e639c; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 12px;">Use This Device</button>';
           }
@@ -1558,15 +1558,15 @@ function pinSlotsForType(typeId, params) {
 }
 
 function nodesHash(screen, id) {
-  if (screen === 'add') return '#sensors/add';
-  if (screen === 'audit') return '#sensors/audit';
-  if (screen === 'configure' && id) return '#sensors/configure/' + encodeURIComponent(id);
-  return '#sensors';
+  if (screen === 'add') return '#nodes/add';
+  if (screen === 'audit') return '#nodes/audit';
+  if (screen === 'configure' && id) return '#nodes/configure/' + encodeURIComponent(id);
+  return '#nodes';
 }
 
 function syncNodesScreenFromHash() {
   const { parts } = parseLocationHash();
-  if (parts[0] !== 'sensors') return;
+  if (parts[0] !== 'nodes') return;
   if (parts[1] === 'add') {
     showNodesScreen('add');
   } else if (parts[1] === 'audit') {
@@ -1654,6 +1654,7 @@ function showNodesScreen(screen) {
       back.textContent = 'Back to list';
       back.onclick = () => setPageHash(nodesHash('view'));
       actions.appendChild(back);
+      if (board) appendBackupButtons(actions, board);
     }
     renderNodesConfigure();
   } else {
@@ -1668,6 +1669,11 @@ function findBoardById(id) {
 
 function findProfile(boardType) {
   return (sensorsPageCache?.boardProfiles || []).find((p) => p.id === boardType) || null;
+}
+
+/** A flashed Nano AVR stores its pin map in the image. Virtual Nanos stay editable. */
+function boardConfigLocked(board) {
+  return !!(board && !board.virtual && board.boardType === 'nano-avr');
 }
 
 function outputTypeMeta(typeId) {
@@ -1827,6 +1833,13 @@ function startSensorDistrictPick() {
 function renderTypePicker() {
   const host = document.getElementById('nodesTypePicker');
   if (!host) return;
+  const board = findBoardById(nodesUi.configureId);
+  if (boardConfigLocked(board)) {
+    nodesUi.pickType = null;
+    nodesUi.selectedPins = [];
+    host.innerHTML = '<p class="wifi-hint">This board cannot be dynamically configured. Please use the image builder to build a new image and re-flash the board.</p>';
+    return;
+  }
   host.innerHTML = '';
   if (!nodesUi.pickType) {
     const list = document.createElement('div');
@@ -2165,7 +2178,7 @@ function renderNodeOutputParams(existingParams) {
     }
     const val = defaults[f.id] != null ? defaults[f.id] : (f.default != null ? f.default : '');
     const wrap = document.createElement('label');
-    wrap.className = 'nodes-param' + (f.testable ? ' has-action' : '');
+    wrap.className = 'nodes-param';
     const title = document.createElement('span');
     title.textContent = f.title || f.id;
     wrap.appendChild(title);
@@ -2182,17 +2195,6 @@ function renderNodeOutputParams(existingParams) {
     }
     input.value = val;
     control.appendChild(input);
-    if (f.testable) {
-      const testBtn = document.createElement('button');
-      testBtn.type = 'button';
-      testBtn.className = 'btn btn-secondary btn-small';
-      testBtn.textContent = 'Test angle';
-      testBtn.onclick = (ev) => {
-        ev.preventDefault();
-        testOutputParamDeg(f.id);
-      };
-      control.appendChild(testBtn);
-    }
     wrap.appendChild(control);
     host.appendChild(wrap);
   });
@@ -2352,11 +2354,11 @@ function renderNodeTriggersEditor() {
         }
       });
       control.appendChild(input);
-      if (f.testable) {
+      if (f.testable && f.id === 'brightness') {
         const testBtn = document.createElement('button');
         testBtn.type = 'button';
         testBtn.className = 'btn btn-secondary btn-small';
-        testBtn.textContent = f.id === 'brightness' ? 'Test level' : 'Test angle';
+        testBtn.textContent = 'Test level';
         testBtn.onclick = () => testTriggerValue(ix, f);
         control.appendChild(testBtn);
       }
@@ -2479,6 +2481,27 @@ function outputControlTriggers(o) {
   return [];
 }
 
+/** Servo pin, or both barrier pins on a level crossing. */
+function servoPinsForOutput(o) {
+  const pins = (Array.isArray(o?.pins) ? o.pins : [])
+    .map((p) => String(p || '').trim())
+    .filter(Boolean);
+  if (o?.type === 'servo') return pins.slice(0, 1);
+  if (o?.type === 'level_crossing') return pins.slice(3, 5);
+  return [];
+}
+
+function renderManualSetHtml(o, boardId) {
+  const pins = servoPinsForOutput(o);
+  if (!pins.length || !boardId) return '';
+  return '<div class="nodes-servo-set">' +
+    '<label>Manual set <input type="number" min="0" max="180" value="90" data-servo-deg></label>' +
+    '<button type="button" class="btn btn-secondary btn-small" data-servo-set' +
+    ' data-board-id="' + escapeHtml(boardId) + '"' +
+    ' data-servo-pins="' + escapeHtml(pins.join(',')) + '">Set</button>' +
+    '</div>';
+}
+
 function renderOutputStateButtonsHtml(o, boardId, outIx) {
   const latchId = outputLatchId(boardId, outIx);
   const latched = nodesUi.lastAccessoryByOutput[latchId] || null;
@@ -2509,6 +2532,7 @@ function renderOutputFuncChip(o, boardId, outIx) {
     (btns
       ? '<div class="nodes-func-states">' + btns + '</div>'
       : '<p class="nodes-io-empty">No DCC triggers</p>') +
+    renderManualSetHtml(o, boardId) +
     '</div>';
 }
 
@@ -2520,6 +2544,7 @@ function renderAssignedOutputCard(board, o, ix, state) {
       escapeHtml(state.label) + '</span>'
     : '';
   const findOn = nodesUi.highlightOutIx === ix;
+  const locked = boardConfigLocked(board);
   const card = document.createElement('div');
   card.className = 'nodes-output-card' + (findOn ? ' is-finding' : '');
   card.dataset.outIx = String(ix);
@@ -2530,10 +2555,12 @@ function renderAssignedOutputCard(board, o, ix, state) {
     '<span class="nodes-output-tools">' +
     '<button type="button" class="nodes-icon-btn" data-out-find title="Highlight pins on board" aria-label="Highlight pins">' +
     '<span aria-hidden="true">⌕</span></button>' +
-    '<button type="button" class="nodes-icon-btn" data-out-cfg title="Configure" aria-label="Configure">' +
-    '<span aria-hidden="true">⚙</span></button>' +
+    (locked ? '' :
+      '<button type="button" class="nodes-icon-btn" data-out-cfg title="Configure" aria-label="Configure">' +
+      '<span aria-hidden="true">⚙</span></button>') +
     '</span></div>' +
     (btns ? '<div class="nodes-func-states">' + btns + '</div>' : '<p class="nodes-io-empty">No DCC triggers</p>') +
+    renderManualSetHtml(o, board.id) +
     '<div class="nodes-output-meta">' + escapeHtml(outputLabel(o.type)) +
     ' · ' + escapeHtml(triggerSummary(o)) + '</div>';
   card.querySelector('[data-out-cfg]')?.addEventListener('click', (ev) => {
@@ -2659,6 +2686,16 @@ function bindViewOutputControls(root) {
       showStatus('DCC ' + dcc + ' ' + (closed ? 'Forward/ON' : 'Reverse/OFF'), 'success');
     });
   });
+  root.querySelectorAll('button[data-servo-set]').forEach((btn) => {
+    if (btn.dataset.boundServo === '1') return;
+    btn.dataset.boundServo = '1';
+    btn.addEventListener('click', () => {
+      const wrap = btn.closest('.nodes-servo-set');
+      const deg = Number(wrap?.querySelector('[data-servo-deg]')?.value);
+      const pins = String(btn.getAttribute('data-servo-pins') || '').split(',').map((p) => p.trim()).filter(Boolean);
+      setServoManually(btn.getAttribute('data-board-id'), pins, deg);
+    });
+  });
 }
 
 function outputLabel(typeId) {
@@ -2694,39 +2731,101 @@ function boardOutputSummary(board) {
     triggerSummary(o) + ' [' + (o.pins || []).join(', ') + ']').join(' · ');
 }
 
+function flashPortChoices() {
+  return Array.from(document.getElementById('sensorFlashPort')?.options || [])
+    .filter((o) => o.value)
+    .map((o) => ({
+      value: o.value,
+      text: o.textContent,
+      boardType: o.dataset.boardType || ''
+    }));
+}
+
+function selectedFlashBoardType() {
+  const fromDraft = nodesUi.addDraft?.usbBoardType;
+  if (fromDraft) return fromDraft;
+  const port = document.getElementById('addUsbPort')?.value || nodesUi.addDraft?.usbPort;
+  const match = flashPortChoices().find((o) => o.value === port);
+  return match?.boardType || '';
+}
+
 async function loadSensorFlashPorts() {
   const select = document.getElementById('sensorFlashPort');
   if (!select) return;
   try {
-    const res = await fetch('/api/ports');
+    const res = await fetch('/api/nodes/ports');
     const data = await res.json();
+    const listed = Array.isArray(data.ports) ? data.ports : [];
     const prev = select.value;
-    select.innerHTML = '<option value="">Select port...</option>';
-    (data.ports || []).forEach((p) => {
+    const placeholder = listed.length ? 'Select port…' : 'No Arduino found';
+    select.innerHTML = '<option value="">' + placeholder + '</option>';
+    listed.forEach((p) => {
+      if (!p || !p.port) return;
       const opt = document.createElement('option');
-      opt.value = p;
-      opt.textContent = p;
+      opt.value = p.port;
+      opt.textContent = p.port + ' — ' + (p.label || p.boardType || 'Arduino');
+      if (p.boardType) opt.dataset.boardType = p.boardType;
       select.appendChild(opt);
     });
-    if (prev && (data.ports || []).includes(prev)) select.value = prev;
+    if (prev && listed.some((p) => p.port === prev)) select.value = prev;
+    else if (!prev && listed.length === 1) select.value = listed[0].port;
   } catch (err) { /* ignore */ }
+}
+
+let sensorsToolchainCache = null;
+
+function profileNeedsUpload(id) {
+  const row = (sensorsToolchainCache?.profiles || []).find((p) => p.id === id);
+  return !!(row && row.requiresUpload && !row.imagePresent);
+}
+
+async function uploadFirmwareZip(file, statusEl) {
+  if (!file) return;
+  if (statusEl) statusEl.textContent = 'Uploading ' + file.name + '…';
+  const res = await fetch('/api/nodes/images', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/zip' },
+    body: file
+  });
+  const data = await readJsonOrError(res);
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  const ids = (data.images || []).map((img) => img.id + ' v' + img.version).join(', ');
+  if (statusEl) statusEl.textContent = 'Installed ' + (ids || 'image') + '.';
+  showStatus('Image zip installed', 'success');
+  await loadSensorsToolchain();
+  updateAddUsbHint();
 }
 
 async function loadSensorsToolchain() {
   const el = document.getElementById('sensorsToolchainStatus');
   if (!el) return;
   try {
-    const res = await fetch('/api/sensors/toolchain');
+    const res = await fetch('/api/nodes/toolchain');
     const data = await res.json();
-    if (data.arduinoCli && data.fqbnReady) {
-      el.textContent = 'Ready (' + data.fqbn + ')';
-      el.style.color = '#0a7a2f';
-    } else if (data.arduinoCli) {
-      el.textContent = 'arduino-cli present; AVR core missing — run: sudo panelsdcc-connect-arduino-install';
+    sensorsToolchainCache = data;
+    const needsZip = (data.profiles || []).filter((p) => p.requiresUpload && !p.imagePresent);
+    const missing = (data.profiles || []).filter((p) => !p.requiresUpload && !p.imagePresent).map((p) => p.id);
+    const tools = [];
+    if (!data.avrdude) tools.push('avrdude');
+    if (!data.esptool) tools.push('esptool');
+    // Zip upload is only for custom Nano AVR — show on the list page only when missing.
+    const zipActions = document.getElementById('firmwareZipActions');
+    const nano = (data.profiles || []).find((p) => p.id === 'nano-avr');
+    if (zipActions) {
+      zipActions.hidden = !(nano && nano.requiresUpload && !nano.imagePresent);
+    }
+    if (missing.length) {
+      el.textContent = 'Images missing: ' + missing.join(', ');
+      el.style.color = '#a00';
+    } else if (needsZip.length) {
+      el.textContent = 'Nano AVR needs an uploaded zip. Other images are ready.';
+      el.style.color = '#a05a00';
+    } else if (tools.length) {
+      el.textContent = 'Images ready; install ' + tools.join(' and ');
       el.style.color = '#a05a00';
     } else {
-      el.textContent = 'Missing — run: sudo panelsdcc-connect-arduino-install';
-      el.style.color = '#a00';
+      el.textContent = 'Prebuilt images ready';
+      el.style.color = '#0a7a2f';
     }
   } catch (err) {
     el.textContent = 'Unable to check toolchain';
@@ -2734,8 +2833,9 @@ async function loadSensorsToolchain() {
 }
 
 async function loadSensorsBoards() {
+  bindNodeRestore();
   try {
-    const res = await fetch('/api/sensors');
+    const res = await fetch('/api/nodes');
     const data = await res.json();
     sensorsPageCache = data;
     fillBoardTypeSelects(data.boardProfiles || []);
@@ -2863,6 +2963,255 @@ function renderNodesAudit() {
   });
 }
 
+function boardBackupEnvelope(board) {
+  const boardType = board.boardType || 'nano-avr';
+  return {
+    format: 'panelsdcc-node',
+    version: 1,
+    name: board.prefix ? ('Prefix ' + board.prefix) : 'Node',
+    description: '',
+    boardType: boardType,
+    prefix: board.prefix || '',
+    kind: boardType === 'nano-avr' ? 'compiled' : 'config',
+    config: {
+      outputs: board.outputs || (board.config && board.config.outputs) || [],
+      pins: board.pins || (board.config && board.config.pins) || [],
+      opticalDistricts: board.opticalDistricts || (board.config && board.config.opticalDistricts) || []
+    }
+  };
+}
+
+function downloadBoardBackup(board) {
+  const data = boardBackupEnvelope(board);
+  const blob = new Blob([JSON.stringify(data, null, 2) + '\n'], { type: 'application/json' });
+  const link = document.createElement('a');
+  const name = String(data.prefix || data.boardType || 'node').replace(/[^\w.-]+/g, '-');
+  link.href = URL.createObjectURL(blob);
+  link.download = name + '.json';
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+let pendingRestore = null;
+
+function closeRestoreModal() {
+  const modal = document.getElementById('nodesRestoreModal');
+  if (modal) modal.hidden = true;
+  pendingRestore = null;
+}
+
+function openRestoreModal(board, file) {
+  pendingRestore = { board: board, file: file };
+  const summary = document.getElementById('nodesRestoreSummary');
+  if (summary) summary.textContent = (file.name || 'Backup') + ' · ' + (file.boardType || '');
+  const filePrefix = document.getElementById('nodesRestoreFilePrefix');
+  if (filePrefix) filePrefix.textContent = file.prefix || 'none';
+  const boardPrefix = document.getElementById('nodesRestoreBoardPrefix');
+  if (boardPrefix) boardPrefix.textContent = board.prefix || 'none';
+  const error = document.getElementById('nodesRestoreError');
+  if (error) error.hidden = true;
+  const accept = document.getElementById('btnRestoreAccept');
+  if (accept) accept.disabled = !file.prefix;
+  const modal = document.getElementById('nodesRestoreModal');
+  if (modal) modal.hidden = false;
+}
+
+async function applyRestore(useFilePrefix) {
+  if (!pendingRestore) return;
+  const board = pendingRestore.board;
+  const file = pendingRestore.file;
+  const error = document.getElementById('nodesRestoreError');
+  if (error) error.hidden = true;
+  try {
+    if (useFilePrefix && file.prefix && file.prefix !== board.prefix) {
+      const res = await fetch('/api/nodes/' + encodeURIComponent(board.id) + '/prefix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prefix: file.prefix })
+      });
+      const data = await readJsonOrError(res);
+      if (!res.ok) throw new Error(data.error || res.statusText);
+    }
+    const config = file.config || {};
+    await persistBoardConfig(board.id, config.outputs || [], config.pins || [], config.opticalDistricts || []);
+    closeRestoreModal();
+    showStatus('Configuration restored', 'success');
+    await loadSensorsBoards();
+  } catch (err) {
+    if (error) {
+      error.textContent = err.message;
+      error.hidden = false;
+    } else {
+      showStatus(err.message, 'error');
+    }
+  }
+}
+
+function beginRestore(board) {
+  if (boardConfigLocked(board)) {
+    showStatus('This board cannot be dynamically configured. Build a new image and re-flash it.', 'error');
+    return;
+  }
+  const input = document.getElementById('nodesRestoreInput');
+  if (!input) return;
+  input.dataset.boardId = board.id;
+  input.click();
+}
+
+function bindNodeRestore() {
+  const input = document.getElementById('nodesRestoreInput');
+  if (!input || input.dataset.bound) return;
+  input.dataset.bound = '1';
+  input.addEventListener('change', async () => {
+    const chosen = input.files && input.files[0];
+    const boardId = input.dataset.boardId;
+    input.value = '';
+    if (!chosen || !boardId) return;
+    const board = findBoardById(boardId);
+    if (!board) return;
+    try {
+      const file = JSON.parse(await chosen.text());
+      if (file.format !== 'panelsdcc-node' || file.version !== 1) {
+        throw new Error('This is not a PanelsDCC node backup');
+      }
+      if ((file.boardType || '') !== (board.boardType || '')) {
+        throw new Error('This backup is for ' + (file.boardType || 'another type') + ', not ' + (board.boardType || 'this board'));
+      }
+      if (boardConfigLocked(board)) {
+        throw new Error('This board cannot be dynamically configured. Build a new image and re-flash it.');
+      }
+      openRestoreModal(board, file);
+    } catch (err) {
+      showStatus(err.message, 'error');
+    }
+  });
+  const keep = document.getElementById('btnRestoreKeep');
+  const accept = document.getElementById('btnRestoreAccept');
+  if (keep) keep.onclick = () => applyRestore(false);
+  if (accept) accept.onclick = () => applyRestore(true);
+  document.querySelectorAll('[data-restore-close]').forEach((el) => {
+    el.addEventListener('click', closeRestoreModal);
+  });
+}
+
+function appendBackupButtons(actions, board) {
+  if (!actions || !board) return;
+  const backup = document.createElement('button');
+  backup.type = 'button';
+  backup.className = 'btn btn-secondary btn-small';
+  backup.textContent = 'Backup';
+  backup.onclick = () => downloadBoardBackup(board);
+  actions.appendChild(backup);
+  const restore = document.createElement('button');
+  restore.type = 'button';
+  restore.className = 'btn btn-secondary btn-small';
+  restore.textContent = 'Restore';
+  restore.onclick = () => beginRestore(board);
+  actions.appendChild(restore);
+}
+
+function formatImageVersionLabel(n) {
+  if (n == null || n === '') return null;
+  let s = String(n).trim();
+  if (/^v/i.test(s)) s = s.slice(1);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if (/^\d+$/.test(s)) return 'v' + s + '.0.0';
+  if (/^\d+(\.\d+){0,2}$/.test(s)) return 'v' + s;
+  return String(n).trim();
+}
+
+function formatBoardImageVersion(b) {
+  if (!b) return '';
+  const board = formatImageVersionLabel(b.firmwareVersion);
+  const shipped = formatImageVersionLabel(b.shippedVersion);
+  if (!board && !shipped) return '';
+  let text;
+  if (board) {
+    text = 'Version ' + board;
+    if (b.updateAvailable) {
+      text += shipped ? (' (update available — Connect has ' + shipped + ')') : ' (update available)';
+    } else {
+      text += ' (up to date)';
+    }
+  } else {
+    text = b.updateAvailable
+      ? ('Version unknown (update available — Connect has ' + shipped + ')')
+      : ('Connect ships ' + shipped);
+  }
+  return '<span class="nodes-image-version">' + escapeHtml(text) + '</span>';
+}
+
+async function retryCandidatePorts(ports) {
+  const list = Array.isArray(ports) ? ports.filter(Boolean) : [];
+  if (!list.length) return;
+  showStatus('Retrying USB boards…', 'success');
+  for (const port of list) {
+    try {
+      await fetch('/api/nodes/probe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ port })
+      });
+    } catch (_) { /* keep trying others */ }
+  }
+  await loadSensorsBoards();
+}
+
+async function probeSensorPort(port, btn) {
+  if (!port) return;
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch('/api/nodes/probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ port })
+    });
+    const data = await readJsonOrError(res);
+    if (!res.ok || !data.ok) throw new Error(data.error || data.systemType || res.statusText);
+    showStatus('Probe ok: ' + (data.systemType || 'ok'), 'success');
+    await loadSensorsBoards();
+    setPageHash(nodesHash('view'));
+  } catch (err) {
+    showStatus('Probe failed: ' + err.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function beginBoardFlash(board) {
+  if (!board || !board.endpoint) return;
+  nodesUi.addMethod = 'usb';
+  nodesUi.addStep = 'details';
+  nodesUi.addDraft = {
+    usbPort: board.endpoint,
+    usbPrefix: board.prefix || '',
+    usbBoardType: board.boardType || '',
+    clearConfig: false
+  };
+  loadSensorFlashPorts().then(() => {
+    setPageHash(nodesHash('add'));
+    renderNodesAdd();
+  });
+}
+
+function setFlashBusy(busy) {
+  const runBtn = document.getElementById('btnNodesAddRun');
+  const backBtn = document.getElementById('btnNodesAddBack');
+  const cancelBtn = document.getElementById('btnNodesAddCancel');
+  const nextBtn = document.getElementById('btnNodesAddNext');
+  if (runBtn) {
+    runBtn.disabled = !!busy;
+    if (busy) runBtn.textContent = 'Flashing…';
+  }
+  if (backBtn) backBtn.disabled = !!busy;
+  if (cancelBtn) cancelBtn.disabled = false; // leave screen only
+  if (nextBtn) nextBtn.disabled = !!busy;
+  ['addUsbPort', 'addUsbPrefix', 'addUsbClearConfig'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !!busy;
+  });
+}
+
 function renderNodesView() {
   const list = document.getElementById('sensorsBoardList');
   const strip = document.getElementById('sensorsCandidateStrip');
@@ -2877,13 +3226,14 @@ function renderNodesView() {
       strip.innerHTML = '';
     } else {
       strip.hidden = false;
-      strip.innerHTML = '<strong>' + candidates.length + ' USB candidate' + (candidates.length > 1 ? 's' : '') +
-        '</strong> waiting to be probed. ' +
-        '<button type="button" class="btn btn-secondary btn-small" id="btnNodesGoProbe">Add via probe</button>';
-      document.getElementById('btnNodesGoProbe')?.addEventListener('click', () => {
-        nodesUi.addMethod = 'probe';
-        nodesUi.addStep = 'details';
-        setPageHash(nodesHash('add'));
+      const ports = candidates.map((c) => c.port || c.endpoint || '').filter(Boolean);
+      strip.innerHTML = '<strong>Connecting…</strong> ' +
+        candidates.length + ' USB board' + (candidates.length > 1 ? 's' : '') +
+        ' — Connect is identifying ' +
+        ports.map((p) => '<code>' + escapeHtml(p) + '</code>').join(', ') + '. ' +
+        '<button type="button" class="btn btn-secondary btn-small" id="btnNodesRetryProbe">Retry</button>';
+      document.getElementById('btnNodesRetryProbe')?.addEventListener('click', () => {
+        retryCandidatePorts(ports);
       });
     }
   }
@@ -2903,11 +3253,13 @@ function renderNodesView() {
         const row = document.createElement('div');
       row.className = 'sensors-board-row nodes-view-card';
       const badge = b.virtual ? ' <span class="wifi-mode-badge">Virtual</span>' : '';
+        const versionLine = formatBoardImageVersion(b);
         row.innerHTML =
           '<div class="sensors-board-header">' +
         '<div><strong>Prefix ' + (b.prefix || '—') + '</strong>' + badge +
         '<div class="nodes-card-sub">' + (b.boardType || '') + ' · ' + (b.transport || 'usb') +
-        ' · <code>' + (b.endpoint || '') + '</code> · ' + (b.status || '') + '</div></div>' +
+        ' · <code>' + (b.endpoint || '') + '</code> · ' + (b.status || '') +
+        (versionLine ? '<br>' + versionLine : '') + '</div></div>' +
           '<div class="sensors-board-actions"></div></div>' +
         renderBoardIoStatus(b);
       bindViewOutputControls(row);
@@ -2917,6 +3269,14 @@ function renderNodesView() {
       cfg.textContent = 'Configure';
       cfg.onclick = () => setPageHash(nodesHash('configure', b.id));
       actions.appendChild(cfg);
+      appendBackupButtons(actions, b);
+      if (!b.virtual && b.endpoint && b.prefix && b.status !== 'flashing') {
+        const upd = document.createElement('button');
+        upd.className = 'btn btn-secondary btn-small';
+        upd.textContent = b.updateAvailable ? 'Update' : 'Flash';
+        upd.onclick = () => beginBoardFlash(b);
+        actions.appendChild(upd);
+      }
       if (b.virtual) {
         const rem = document.createElement('button');
         rem.className = 'btn btn-secondary btn-small';
@@ -2927,14 +3287,14 @@ function renderNodesView() {
           const rel = document.createElement('button');
           rel.className = 'btn btn-secondary btn-small';
           rel.textContent = 'Release port';
-          rel.onclick = () => releaseSensorBoard(b.id);
+          rel.onclick = () => releaseNode(b.id);
           actions.appendChild(rel);
         } else if (b.status === 'released' || b.status === 'flashing') {
           const resume = document.createElement('button');
         resume.className = 'btn btn-secondary btn-small';
           resume.textContent = 'Resume';
           resume.disabled = b.status === 'flashing';
-          resume.onclick = () => resumeSensorBoard(b.id);
+          resume.onclick = () => resumeNode(b.id);
           actions.appendChild(resume);
         }
         list.appendChild(row);
@@ -3008,13 +3368,13 @@ function refreshNodesAddDetails() {
 function syncAddUsbPortOptions() {
   const sel = document.getElementById('addUsbPort');
   if (!sel || document.activeElement === sel) return;
-  const ports = Array.from(document.getElementById('sensorFlashPort')?.options || [])
-    .filter((o) => o.value)
-    .map((o) => ({ value: o.value, text: o.textContent }));
-  const existing = Array.from(sel.options).filter((o) => o.value).map((o) => o.value);
-  if (ports.length === existing.length && ports.every((p, i) => p.value === existing[i])) return;
+  const ports = flashPortChoices();
+  const existing = Array.from(sel.options).filter((o) => o.value)
+    .map((o) => o.value + '\t' + o.textContent);
+  const next = ports.map((p) => p.value + '\t' + p.text);
+  if (existing.join('\n') === next.join('\n')) return;
   const prev = sel.value;
-  sel.innerHTML = '<option value="">Select port…</option>';
+  sel.innerHTML = '<option value="">' + (ports.length ? 'Select port…' : 'No Arduino found') + '</option>';
   ports.forEach((p) => {
     const opt = document.createElement('option');
     opt.value = p.value;
@@ -3022,6 +3382,7 @@ function syncAddUsbPortOptions() {
     sel.appendChild(opt);
   });
   if (prev && ports.some((p) => p.value === prev)) sel.value = prev;
+  else if (!prev && ports.length === 1) sel.value = ports[0].value;
 }
 
 function renderNodesAddDetailsBody() {
@@ -3030,9 +3391,12 @@ function renderNodesAddDetailsBody() {
   if (!body) return;
   // Poll remounts this form — keep in-progress field values.
   const draft = {
-    usbPort: document.getElementById('addUsbPort')?.value,
+    usbPort: document.getElementById('addUsbPort')?.value || nodesUi.addDraft?.usbPort,
     usbType: document.getElementById('addUsbType')?.value || nodesUi.addDraft?.usbType,
+    usbBoardType: nodesUi.addDraft?.usbBoardType,
     usbPrefix: document.getElementById('addUsbPrefix')?.value || nodesUi.addDraft?.usbPrefix,
+    clearConfig: document.getElementById('addUsbClearConfig')?.checked
+      ?? !!nodesUi.addDraft?.clearConfig,
     shimType: document.getElementById('addShimType')?.value || nodesUi.addDraft?.shimType,
     shimPrefix: document.getElementById('addShimPrefix')?.value || nodesUi.addDraft?.shimPrefix,
     btPrefix: document.getElementById('addBtPrefix')?.value || nodesUi.addDraft?.btPrefix,
@@ -3047,33 +3411,70 @@ function renderNodesAddDetailsBody() {
 
   if (nodesUi.addMethod === 'usb') {
     if (title) title.textContent = 'Flash USB board';
-    const ports = Array.from(document.getElementById('sensorFlashPort')?.options || [])
-      .filter((o) => o.value)
-      .map((o) => '<option value="' + o.value + '"' +
-        (o.value === draft.usbPort ? ' selected' : '') + '>' + o.textContent + '</option>')
+    const choices = flashPortChoices();
+    const selectedPort = draft.usbPort || (choices.length === 1 ? choices[0].value : '');
+    const ports = choices.map((o) => '<option value="' + escapeHtml(o.value) + '"' +
+        (o.value === selectedPort ? ' selected' : '') + '>' + escapeHtml(o.text) + '</option>')
       .join('');
-    const type = draft.usbType || 'nano-avr';
     const prefix = draft.usbPrefix || suggested;
+    const selectedType = draft.usbBoardType
+      || choices.find((c) => c.value === selectedPort)?.boardType
+      || '';
+    const bakedNano = selectedType === 'nano-avr';
+    const clearChecked = !bakedNano && draft.clearConfig ? ' checked' : '';
+    const clearRow = bakedNano
+      ? '<p class="wifi-hint">Nano AVR layout is baked into the image — there is no clear-config step.</p>'
+      : ('<label class="nodes-probe-row"><input type="checkbox" id="addUsbClearConfig"' + clearChecked + '>' +
+        ' Start fresh — clear saved layout on the board</label>');
+    // Zip upload is only for custom Nano AVR builds. Mega / ESP32 use shipped images.
+    const zipRow = bakedNano
+      ? ('<div class="form-group"><label for="addUsbZip">Nano AVR image zip</label>' +
+        '<input type="file" id="addUsbZip" accept=".zip,application/zip">' +
+        '<button type="button" class="btn btn-secondary" id="btnAddUsbZip">Upload zip</button>' +
+        '<p class="wifi-hint" id="addUsbZipStatus"></p></div>')
+      : '';
     body.innerHTML =
-      '<div class="form-group"><label>Port</label><select id="addUsbPort"><option value="">Select port…</option>' +
+      '<div class="form-group"><label>Port</label><select id="addUsbPort"><option value="">' +
+      (choices.length ? 'Select port…' : 'No Arduino found') + '</option>' +
       ports + '</select></div>' +
-      '<div class="form-group"><label>Board type</label><select id="addUsbType">' +
-      profileOpts(type) + '</select></div>' +
       '<div class="form-group"><label>Prefix (A–ZZ)</label>' +
       '<input type="text" id="addUsbPrefix" maxlength="2" value="' + escapeHtml(prefix) +
       '" style="text-transform:uppercase;"></div>' +
+      clearRow +
+      zipRow +
       '<p class="wifi-hint" id="addUsbHint"></p>';
     const persistUsb = () => {
+      const port = document.getElementById('addUsbPort')?.value;
+      const type = flashPortChoices().find((c) => c.value === port)?.boardType
+        || nodesUi.addDraft?.usbBoardType
+        || '';
       nodesUi.addDraft = Object.assign({}, nodesUi.addDraft, {
-        usbType: document.getElementById('addUsbType')?.value,
         usbPrefix: document.getElementById('addUsbPrefix')?.value,
-        usbPort: document.getElementById('addUsbPort')?.value
+        usbPort: port,
+        usbBoardType: type,
+        clearConfig: type === 'nano-avr'
+          ? false
+          : !!document.getElementById('addUsbClearConfig')?.checked
       });
       updateAddUsbHint();
     };
-    document.getElementById('addUsbType')?.addEventListener('change', persistUsb);
     document.getElementById('addUsbPrefix')?.addEventListener('input', persistUsb);
-    document.getElementById('addUsbPort')?.addEventListener('change', persistUsb);
+    document.getElementById('addUsbPort')?.addEventListener('change', () => {
+      const prevType = nodesUi.addDraft?.usbBoardType || '';
+      persistUsb();
+      if ((nodesUi.addDraft?.usbBoardType || '') !== prevType) {
+        renderNodesAddDetailsBody();
+      }
+    });
+    document.getElementById('addUsbClearConfig')?.addEventListener('change', persistUsb);
+    document.getElementById('btnAddUsbZip')?.addEventListener('click', () => {
+      const file = document.getElementById('addUsbZip')?.files?.[0];
+      const statusEl = document.getElementById('addUsbZipStatus');
+      uploadFirmwareZip(file, statusEl).catch((err) => {
+        if (statusEl) statusEl.textContent = err.message;
+        showStatus(err.message, 'error');
+      });
+    });
     updateAddUsbHint();
   } else if (nodesUi.addMethod === 'virtual') {
     if (title) title.textContent = 'Virtual board';
@@ -3139,16 +3540,26 @@ function updateAddUsbHint() {
   const el = document.getElementById('addUsbHint');
   if (!el) return;
   const prefix = (document.getElementById('addUsbPrefix')?.value || '').trim().toUpperCase();
-  const type = document.getElementById('addUsbType')?.value || 'nano-avr';
   if (!/^[A-Z]{1,2}$/.test(prefix)) {
     el.textContent = 'Enter a valid prefix (A–Z or AA–ZZ).';
     return;
   }
-  if (type.indexOf('mega') >= 0) {
-    el.textContent = 'Default Mega: optical ' + prefix + '-A0…A14 · digital ' + prefix + '-D22…D37';
-  } else {
-    el.textContent = 'Default Nano: optical ' + prefix + '-A0…A6 · digital ' + prefix + '-D2…D12';
+  const type = selectedFlashBoardType() || nodesUi.addDraft?.usbBoardType || '';
+  if (type === 'nano-avr') {
+    el.textContent = profileNeedsUpload('nano-avr')
+      ? 'Upload the zip from panelsDCC-Nodes first — Nano AVR has no built-in image.'
+      : 'Uses your uploaded Nano AVR zip. Layout is baked into that image.';
+    return;
   }
+  if (type === 'nano-esp32' || type === 'mega-esp32') {
+    el.textContent = 'Connect holds the USB port, asks the board to enter flash mode, then writes the shipped image. Layout stays on the board. Only if that fails: double-tap reset and choose the new short port name.';
+    return;
+  }
+  if (type === 'mega-avr') {
+    el.textContent = 'Uses the fixed image shipped with Connect. Pin layout and outputs stay on the board (dynamic config).';
+    return;
+  }
+  el.textContent = 'Connect checks the chip before writing. Mega and ESP32 use shipped images; only a plain Arduino Nano needs an uploaded zip.';
 }
 
 function prepareNodesAddAction() {
@@ -3156,9 +3567,14 @@ function prepareNodesAddAction() {
   const logEl = document.getElementById('sensorFlashLog');
   const runBtn = document.getElementById('btnNodesAddRun');
   if (logEl) logEl.textContent = '';
+  if (nodesUi.addMethod !== 'usb') {
+    const stages = document.getElementById('sensorFlashStages');
+    if (stages) stages.hidden = true;
+  }
   if (nodesUi.addMethod === 'usb') {
     if (title) title.textContent = 'Flash board';
     if (runBtn) runBtn.textContent = 'Flash';
+    renderFlashStages({ stage: 'idle', state: 'idle' });
   } else if (nodesUi.addMethod === 'virtual') {
     if (title) title.textContent = 'Create virtual board';
     if (runBtn) runBtn.textContent = 'Create';
@@ -3175,7 +3591,7 @@ async function runAddBluetoothScan() {
   const host = document.getElementById('addBtResults');
   if (host) host.textContent = 'Scanning…';
   try {
-    const res = await fetch('/api/sensors/bluetooth/scan', { method: 'POST' });
+    const res = await fetch('/api/nodes/bluetooth/scan', { method: 'POST' });
     const data = await readJsonOrError(res);
     const devices = data.devices || [];
     if (!host) return;
@@ -3195,15 +3611,21 @@ async function runNodesAddAction() {
   const logEl = document.getElementById('sensorFlashLog');
   try {
     if (nodesUi.addMethod === 'usb') {
-      const port = document.getElementById('addUsbPort')?.value;
-      const prefix = (document.getElementById('addUsbPrefix')?.value || '').trim().toUpperCase();
-      const boardType = document.getElementById('addUsbType')?.value || 'nano-avr';
+      const port = document.getElementById('addUsbPort')?.value || nodesUi.addDraft?.usbPort;
+      const prefix = (document.getElementById('addUsbPrefix')?.value
+        || nodesUi.addDraft?.usbPrefix || '').trim().toUpperCase();
+      const boardType = selectedFlashBoardType() || 'detect';
+      const clearConfig = boardType === 'nano-avr'
+        ? false
+        : !!(document.getElementById('addUsbClearConfig')?.checked
+          ?? nodesUi.addDraft?.clearConfig);
       if (!port) throw new Error('Select a port');
       if (!/^[A-Z]{1,2}$/.test(prefix)) throw new Error('Prefix must be A–Z or AA–ZZ');
-      const res = await fetch('/api/sensors/flash', {
+      setFlashBusy(true);
+      const res = await fetch('/api/nodes/flash', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ port, prefix, boardType })
+        body: JSON.stringify({ port, prefix, boardType, clearConfig })
       });
       const data = await readJsonOrError(res);
       if (!res.ok && res.status !== 202) throw new Error(data.error || res.statusText);
@@ -3216,7 +3638,7 @@ async function runNodesAddAction() {
     if (nodesUi.addMethod === 'virtual') {
       const prefix = (document.getElementById('addShimPrefix')?.value || '').trim().toUpperCase();
       const boardType = document.getElementById('addShimType')?.value || 'nano-avr';
-      const res = await fetch('/api/sensors/shim', {
+      const res = await fetch('/api/nodes/shim', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prefix: prefix || undefined, boardType })
@@ -3233,7 +3655,7 @@ async function runNodesAddAction() {
       const port = document.querySelector('input[name="addProbePort"]:checked')?.value;
       if (!port) throw new Error('Select a candidate');
       if (logEl) logEl.textContent = 'Probing ' + port + '…';
-    const res = await fetch('/api/sensors/probe', {
+    const res = await fetch('/api/nodes/probe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ port })
@@ -3253,7 +3675,7 @@ async function runNodesAddAction() {
       const address = document.querySelector('input[name="addBtAddr"]:checked')?.value;
       const prefix = (document.getElementById('addBtPrefix')?.value || '').trim().toUpperCase();
       if (!address) throw new Error('Select a device from scan results');
-      const res = await fetch('/api/sensors/bluetooth/pair', {
+      const res = await fetch('/api/nodes/bluetooth/pair', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ address, prefix: prefix || undefined })
@@ -3267,6 +3689,11 @@ async function runNodesAddAction() {
       else setPageHash(nodesHash('view'));
     }
   } catch (err) {
+    setFlashBusy(false);
+    if (nodesUi.addMethod === 'usb') {
+      const runBtn = document.getElementById('btnNodesAddRun');
+      if (runBtn) runBtn.textContent = 'Flash';
+    }
     showStatus(err.message, 'error');
     if (logEl) logEl.textContent = err.message;
   }
@@ -3582,10 +4009,16 @@ function syncViewLatchFromOutputStates(board) {
     const st = (board.outputStates || []).find((s) => s.ix === ix);
     if (!st) return;
     const trig = pickLatchTrigger(o, st);
-    if (!trig) return;
+    const latchId = outputLatchId(board.id, ix);
+    if (!trig) {
+      if ((o.type === 'servo' && st.deg != null) || st.state === 'manual' || st.phase === 'manual') {
+        delete nodesUi.lastAccessoryByOutput[latchId];
+      }
+      return;
+    }
     const dcc = Number(trig.dcc) || 0;
     const closed = triggerDirectionClosed(trig.direction);
-    nodesUi.lastAccessoryByOutput[outputLatchId(board.id, ix)] =
+    nodesUi.lastAccessoryByOutput[latchId] =
       dcc + ':' + (closed ? 'on' : 'off');
   });
 }
@@ -3613,7 +4046,10 @@ function pickLatchTrigger(o, st) {
   }
   if (o.type === 'servo' && st.deg != null) {
     const hit = triggers.find((t) => Number(t.deg) === Number(st.deg));
-    if (hit) return hit;
+    return hit || null;
+  }
+  if (o.type === 'level_crossing' && (st.state === 'manual' || st.phase === 'manual')) {
+    return null;
   }
   if (o.type === 'fade' && st.brightness != null) {
     const hit = triggers.find((t) => Number(t.brightness) === Number(st.brightness));
@@ -3677,16 +4113,20 @@ function renderNodesConfigure() {
   const diagram = document.getElementById('nodesBoardDiagram');
   const list = document.getElementById('nodesOutputList');
   if (!board) {
-    if (meta) meta.innerHTML = '<p class="wifi-hint">Board not found. <a href="#sensors">Back to list</a></p>';
+    if (meta) meta.innerHTML = '<p class="wifi-hint">Board not found. <a href="#nodes">Back to list</a></p>';
     if (diagram) diagram.innerHTML = '';
     nodesUi._configureStructureKey = null;
     return;
   }
   const profile = findProfile(board.boardType) || { pins: [], id: board.boardType };
+  const locked = boardConfigLocked(board);
+  const pickHeading = document.querySelector('#nodesConfigure .nodes-pick-pane h3');
+  if (pickHeading) pickHeading.textContent = locked ? 'Image' : 'Add';
   if (meta) {
     meta.innerHTML = '<span class="wifi-mode-badge">' + (board.virtual ? 'Virtual' : (board.transport || 'usb')) +
       '</span> <strong>' + (board.boardType || '') + '</strong> · <code>' + (board.endpoint || '') +
-      '</code> · ' + (board.status || '');
+      '</code> · ' + (board.status || '') +
+      (locked ? ' · fixed image' : '');
   }
 
   const structKey = configureStructureKey(board);
@@ -3745,7 +4185,9 @@ function renderNodesConfigure() {
     const outs = board.outputs || [];
     const stateIx = boardOutputStateIndex(board).byIx;
     if (!outs.length) {
-      list.innerHTML = '<p class="wifi-hint">None yet — choose an output type, then pick pins on the board.</p>';
+      list.innerHTML = locked
+        ? '<p class="wifi-hint">No outputs in this image.</p>'
+        : '<p class="wifi-hint">None yet — choose an output type, then pick pins on the board.</p>';
     } else {
       list.innerHTML = '';
       outs.forEach((o, ix) => {
@@ -3868,6 +4310,23 @@ function renderPinColumn(pins, usage, side) {
 function onBoardPinClick(label, usage, pin) {
   const board = findBoardById(nodesUi.configureId);
   if (!board) return;
+  if (boardConfigLocked(board)) {
+    if (usage && usage.role === 'output' && usage.outputIx != null) {
+      nodesUi.highlightDistIx = null;
+      nodesUi.highlightOutIx = nodesUi.highlightOutIx === usage.outputIx ? null : usage.outputIx;
+    } else if (usage && (usage.role === 'ref' || usage.role === 'optical') && usage.districtIx != null) {
+      nodesUi.highlightOutIx = null;
+      nodesUi.highlightDistIx = nodesUi.highlightDistIx === usage.districtIx ? null : usage.districtIx;
+    }
+    applyPinHighlights(board);
+    document.querySelectorAll('#nodesOutputList .nodes-output-card').forEach((el) => {
+      el.classList.toggle('is-finding', Number(el.dataset.outIx) === nodesUi.highlightOutIx);
+    });
+    document.querySelectorAll('#nodesDistrictList .nodes-output-card').forEach((el) => {
+      el.classList.toggle('is-finding', Number(el.dataset.distIx) === nodesUi.highlightDistIx);
+    });
+    return;
+  }
   if (usage && usage.role === 'output' && usage.outputIx != null && !nodesUi.pickType) {
     openOutputModal(board, usage.outputIx);
     return;
@@ -3952,6 +4411,7 @@ function seedTriggersForType(board, type) {
 }
 
 function openNewOutputModal(board, type, pins) {
+  if (boardConfigLocked(board)) return;
   nodesUi.editingOutputIx = null;
   nodesUi.editOriginalDcc = null;
   setOutputTypeDisplay(type);
@@ -3974,6 +4434,7 @@ function openNewOutputModal(board, type, pins) {
 }
 
 function openOutputModal(board, outputIx) {
+  if (boardConfigLocked(board)) return;
   const o = (board.outputs || [])[outputIx];
   if (!o) return;
   nodesUi.editingOutputIx = outputIx;
@@ -4017,7 +4478,7 @@ async function persistBoardConfig(boardId, outputs, pins, opticalDistricts) {
     pins: pins || [],
     opticalDistricts: opticalDistricts || []
   };
-  const res = await fetch('/api/sensors/' + encodeURIComponent(boardId) + '/config', {
+  const res = await fetch('/api/nodes/' + encodeURIComponent(boardId) + '/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
@@ -4190,14 +4651,35 @@ async function deleteNodeOutputCfg() {
   }
 }
 
-async function sendNodeTestCommand(command) {
-  const id = nodesUi._modalBoardId || nodesUi.configureId;
-  if (!id) {
-    showStatus('No board selected', 'error');
+async function setServoManually(boardId, pins, deg) {
+  if (!pins.length) {
+    showStatus('No servo pin on this output', 'error');
     return;
   }
+  if (!Number.isFinite(deg) || deg < 0 || deg > 180) {
+    showStatus('Enter an angle 0–180', 'error');
+    return;
+  }
+  for (const pin of pins) {
+    const sent = await sendNodeTestCommand('SERVO ' + pin + ' ' + deg, boardId, true);
+    if (!sent) return;
+    if (!String(sent.sent || '').toUpperCase().startsWith('TEST SERVO ')) {
+      showStatus('Servo command was not sent directly', 'error');
+      return;
+    }
+  }
+  showStatus('Servo ' + pins.join(', ') + ' set to ' + deg + '°', 'success');
+  await loadSensorsBoards();
+}
+
+async function sendNodeTestCommand(command, boardId, quiet) {
+  const id = boardId || nodesUi._modalBoardId || nodesUi.configureId;
+  if (!id) {
+    showStatus('No board selected', 'error');
+    return null;
+  }
   try {
-    const res = await fetch('/api/sensors/' + encodeURIComponent(id) + '/test', {
+    const res = await fetch('/api/nodes/' + encodeURIComponent(id) + '/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command })
@@ -4205,7 +4687,7 @@ async function sendNodeTestCommand(command) {
     const data = await readJsonOrError(res);
     if (!res.ok) throw new Error(data.error || res.statusText);
     if (data.reply) return data;
-    showStatus('Test sent: ' + data.sent, 'success');
+    if (!quiet) showStatus('Test sent: ' + data.sent, 'success');
     return data;
   } catch (err) {
     showStatus('Test failed: ' + err.message, 'error');
@@ -4239,6 +4721,7 @@ function syncDistrictModalSummary() {
 }
 
 function openDistrictModal(board, districtIx) {
+  if (boardConfigLocked(board)) return;
   const districts = boardOpticalDistricts(board);
   const d = districts[districtIx];
   if (!d) return;
@@ -4527,6 +5010,7 @@ function applyCalibratePeakToDistrict() {
 
 function renderAssignedDistrictCard(board, d, ix) {
   const findOn = nodesUi.highlightDistIx === ix;
+  const locked = boardConfigLocked(board);
   const card = document.createElement('div');
   card.className = 'nodes-output-card' + (findOn ? ' is-finding' : '');
   card.dataset.distIx = String(ix);
@@ -4536,8 +5020,9 @@ function renderAssignedDistrictCard(board, d, ix) {
     '<span class="nodes-output-tools">' +
     '<button type="button" class="nodes-icon-btn" data-dist-find title="Highlight pins on board" aria-label="Highlight pins">' +
     '<span aria-hidden="true">⌕</span></button>' +
-    '<button type="button" class="nodes-icon-btn" data-dist-cfg title="Configure" aria-label="Configure">' +
-    '<span aria-hidden="true">⚙</span></button>' +
+    (locked ? '' :
+      '<button type="button" class="nodes-icon-btn" data-dist-cfg title="Configure" aria-label="Configure">' +
+      '<span aria-hidden="true">⚙</span></button>') +
     '</span></div>' +
     '<div class="nodes-output-meta">Ref ' + escapeHtml(d.ref || '—') +
     ' · ' + escapeHtml((d.sensors || []).join(', ') || '—') +
@@ -4567,7 +5052,9 @@ function renderDistrictList(board) {
   const districts = boardOpticalDistricts(board);
   list.innerHTML = '';
   if (!districts.length) {
-    list.innerHTML = '<p class="wifi-hint">No sensor districts yet. Choose <strong>Sensor district</strong> on the left to add one.</p>';
+    list.innerHTML = boardConfigLocked(board)
+      ? '<p class="wifi-hint">No sensor districts in this image.</p>'
+      : '<p class="wifi-hint">No sensor districts yet. Choose <strong>Sensor district</strong> on the left to add one.</p>';
     return;
   }
   districts.forEach((d, ix) => {
@@ -4598,41 +5085,9 @@ async function testTriggerValue(ix, field) {
   }
 }
 
-/** Pins for barrier servos on the open modal (level crossing), else empty. */
-function modalServoPinsForType(typeId) {
-  const pins = nodesUi._modalPins || [];
-  const slots = pinSlotsForType(typeId);
-  if (slots?.length) {
-    return slots
-      .map((s, i) => ({ key: s.key, caps: s.caps || [], pin: pins[i] }))
-      .filter((x) => x.pin && (x.caps.includes('servo') || /^barrier/i.test(x.key)))
-      .map((x) => x.pin);
-  }
-  return pins.slice(0, 1).filter(Boolean);
-}
-
-async function testOutputParamDeg(paramId) {
-  const host = document.getElementById('nodeOutputParams');
-  const input = host?.querySelector('[data-param="' + paramId + '"]');
-  const deg = Number(input?.value);
-  if (!Number.isFinite(deg) || deg < 0 || deg > 180) {
-    showStatus('Enter an angle 0–180° to test', 'error');
-    return;
-  }
-  const type = document.getElementById('nodeOutputType')?.value || '';
-  const servoPins = modalServoPinsForType(type);
-  if (!servoPins.length) {
-    showStatus('No barrier servo pins selected', 'error');
-    return;
-  }
-  for (const pin of servoPins) {
-    await sendNodeTestCommand('SERVO ' + pin + ' ' + deg);
-  }
-}
-
-async function releaseSensorBoard(id) {
+async function releaseNode(id) {
   try {
-    const res = await fetch('/api/sensors/' + encodeURIComponent(id) + '/release', { method: 'POST' });
+    const res = await fetch('/api/nodes/' + encodeURIComponent(id) + '/release', { method: 'POST' });
     const data = await readJsonOrError(res);
     if (!res.ok) throw new Error(data.error || res.statusText);
     showStatus('Sensor port released', 'success');
@@ -4642,9 +5097,9 @@ async function releaseSensorBoard(id) {
   }
 }
 
-async function resumeSensorBoard(id) {
+async function resumeNode(id) {
   try {
-    const res = await fetch('/api/sensors/' + encodeURIComponent(id) + '/resume', { method: 'POST' });
+    const res = await fetch('/api/nodes/' + encodeURIComponent(id) + '/resume', { method: 'POST' });
     const data = await readJsonOrError(res);
     if (!res.ok) throw new Error(data.error || res.statusText);
     showStatus('Sensor board resumed', 'success');
@@ -4656,7 +5111,7 @@ async function resumeSensorBoard(id) {
 
 async function removeShimBoard(id) {
   try {
-    const res = await fetch('/api/sensors/' + encodeURIComponent(id) + '/remove', { method: 'POST' });
+    const res = await fetch('/api/nodes/' + encodeURIComponent(id) + '/remove', { method: 'POST' });
     const data = await readJsonOrError(res);
     if (!res.ok) throw new Error(data.error || res.statusText);
     showStatus('Virtual board removed', 'success');
@@ -4669,7 +5124,7 @@ async function removeShimBoard(id) {
 
 async function simulateShimChannel(id, hardwareId, state) {
   try {
-    const res = await fetch('/api/sensors/' + encodeURIComponent(id) + '/simulate', {
+    const res = await fetch('/api/nodes/' + encodeURIComponent(id) + '/simulate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hardwareId, state })
@@ -4682,18 +5137,61 @@ async function simulateShimChannel(id, hardwareId, state) {
   }
 }
 
+function renderFlashStages(data) {
+  const ol = document.getElementById('sensorFlashStages');
+  if (!ol) return;
+  if (nodesUi.addMethod !== 'usb') {
+    ol.hidden = true;
+    return;
+  }
+  const steps = [
+    { id: 'preparing', label: 'Check image' },
+    { id: 'writing', label: 'Write image' },
+    { id: 'prefix', label: 'Send prefix' },
+    { id: 'clearing', label: 'Clear layout' },
+    { id: 'success', label: 'Done' }
+  ];
+  const showClear = !!(data?.clearConfig || nodesUi.addDraft?.clearConfig
+    || document.getElementById('addUsbClearConfig')?.checked);
+  const visible = showClear ? steps : steps.filter((s) => s.id !== 'clearing');
+  const stage = data?.stage === 'retrying' ? 'writing' : (data?.stage || 'idle');
+  const order = visible.map((s) => s.id);
+  const ix = order.indexOf(stage);
+  const failed = data?.state === 'failed' || stage === 'failed';
+  const finished = data?.state === 'success' || stage === 'success';
+  ol.hidden = false;
+  ol.innerHTML = visible.map((s, i) => {
+    let cls = '';
+    if (finished) cls = 'is-done';
+    else if (failed && (s.id === stage || (stage === 'failed' && i === 0))) cls = 'is-failed';
+    else if (ix >= 0 && i < ix) cls = 'is-done';
+    else if (s.id === stage) cls = 'is-current';
+    const label = s.id === 'writing' && data?.stage === 'retrying' ? 'Write image · other baud' : s.label;
+    return '<li class="' + cls + '">' + label + '</li>';
+  }).join('');
+}
+
 async function pollSensorFlashStatus(expectedPrefix) {
   const logEl = document.getElementById('sensorFlashLog');
   try {
-    const res = await fetch('/api/sensors/flash/status');
+    const res = await fetch('/api/nodes/flash/status');
     const data = await res.json();
+    renderFlashStages(data);
     if (logEl) {
-      logEl.textContent = (data.log || []).join('\n') + (data.error ? '\nERROR: ' + data.error : '');
+      const lines = data.log || [];
+      const already = data.error && lines.some((line) => line.indexOf(data.error) >= 0);
+      logEl.textContent = lines.join('\n') + (data.error && !already ? '\nERROR: ' + data.error : '');
+      logEl.scrollTop = logEl.scrollHeight;
     }
     if (data.state === 'success' || data.state === 'failed' || data.state === 'idle') {
       if (sensorFlashPollTimer) {
         clearInterval(sensorFlashPollTimer);
         sensorFlashPollTimer = null;
+      }
+      setFlashBusy(false);
+      if (nodesUi.addMethod === 'usb') {
+        const runBtn = document.getElementById('btnNodesAddRun');
+        if (runBtn) runBtn.textContent = 'Flash';
       }
       await loadSensorsBoards();
       if (data.state === 'success') {
@@ -4787,8 +5285,18 @@ function bindNodesUi() {
 
 function refreshSensorsPage() {
   loadSensorsToolchain();
+  document.getElementById('firmwareZipInput')?.addEventListener('change', (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    const statusEl = document.getElementById('firmwareZipStatus');
+    uploadFirmwareZip(file, statusEl).catch((err) => {
+      if (statusEl) statusEl.textContent = err.message;
+      showStatus(err.message, 'error');
+    }).finally(() => {
+      ev.target.value = '';
+    });
+  });
   loadSensorFlashPorts().then(() => loadSensorsBoards()).then(() => {
-    if (currentPageFromHash() === 'sensors') syncNodesScreenFromHash();
+    if (currentPageFromHash() === 'nodes') syncNodesScreenFromHash();
   });
 }
 
@@ -4815,7 +5323,7 @@ function scheduleSensorsPoll() {
   if (sensorsPollTimer) clearTimeout(sensorsPollTimer);
   const ms = sensorsPageCache?.outputAnimating ? 250 : 1500;
   sensorsPollTimer = setTimeout(async () => {
-  if (currentPageFromHash() === 'sensors') {
+  if (currentPageFromHash() === 'nodes') {
       await loadSensorFlashPorts();
       await loadSensorsBoards();
   }

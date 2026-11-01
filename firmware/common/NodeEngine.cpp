@@ -8,6 +8,7 @@
 static Preferences gPrefs;
 #else
 #include <EEPROM.h>
+#include <avr/eeprom.h>
 #endif
 
 // ---- globals ----
@@ -28,6 +29,88 @@ static Servo gServos[NODE_MAX_SERVOS];
 static uint8_t gServoCount = 0;
 
 static const unsigned long CLEAR_HOLD_MS = 1000;
+
+// PREFIX override: 1–2 letters. Not stored inside the CFG blob (that starts at 0).
+// AVR uses the last four EEPROM bytes: 'P' 'X' c0 c1 (c1 is 0 for a single letter).
+// ESP32 uses NVS namespace "panelsdcc", key "prefix".
+static char gRuntimePrefix[3];
+
+static bool isPrefixLetter(char c) {
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+
+static void setRuntimePrefix(char a, char b) {
+  if (a >= 'a' && a <= 'z') a = (char)(a - 32);
+  if (b >= 'a' && b <= 'z') b = (char)(b - 32);
+  gRuntimePrefix[0] = a;
+  gRuntimePrefix[1] = b;
+  gRuntimePrefix[2] = '\0';
+}
+
+static void persistRuntimePrefix() {
+#if defined(ESP32)
+  if (!gPrefs.begin("panelsdcc", false)) return;
+  gPrefs.putString("prefix", gRuntimePrefix);
+  gPrefs.end();
+#else
+  int base = (int)E2END - 3;
+  if (base < 0) return;
+  EEPROM.update(base, 'P');
+  EEPROM.update(base + 1, 'X');
+  EEPROM.update(base + 2, (uint8_t)gRuntimePrefix[0]);
+  EEPROM.update(base + 3, gRuntimePrefix[1] ? (uint8_t)gRuntimePrefix[1] : 0);
+#endif
+}
+
+static void loadRuntimePrefix() {
+  gRuntimePrefix[0] = '\0';
+  gRuntimePrefix[1] = '\0';
+  gRuntimePrefix[2] = '\0';
+#if defined(ESP32)
+  if (!gPrefs.begin("panelsdcc", true)) return;
+  String stored = gPrefs.getString("prefix", "");
+  gPrefs.end();
+  if (stored.length() < 1 || !isPrefixLetter(stored.charAt(0))) return;
+  char b = 0;
+  if (stored.length() >= 2 && isPrefixLetter(stored.charAt(1))) b = stored.charAt(1);
+  setRuntimePrefix(stored.charAt(0), b);
+#else
+  int base = (int)E2END - 3;
+  if (base < 0) return;
+  if (EEPROM.read(base) != 'P' || EEPROM.read(base + 1) != 'X') return;
+  char a = (char)EEPROM.read(base + 2);
+  char b = (char)EEPROM.read(base + 3);
+  if (!isPrefixLetter(a)) return;
+  if (b != 0 && !isPrefixLetter(b)) b = 0;
+  setRuntimePrefix(a, b);
+#endif
+}
+
+void nodeLoadIdentity() {
+  loadRuntimePrefix();
+}
+
+const char* nodeEffectivePrefix() {
+  if (gRuntimePrefix[0]) return gRuntimePrefix;
+  const char* compiled = boardPrefix();
+  return (compiled && compiled[0]) ? compiled : "A";
+}
+
+static bool handlePrefix(const char* rest) {
+  while (*rest == ' ') rest++;
+  if (!isPrefixLetter(rest[0])) return false;
+  char b = 0;
+  if (isPrefixLetter(rest[1])) {
+    b = rest[1];
+    if (rest[2] != '\0' && rest[2] != ' ' && rest[2] != '\r') return false;
+  } else if (rest[1] != '\0' && rest[1] != ' ' && rest[1] != '\r') {
+    return false;
+  }
+  setRuntimePrefix(rest[0], b);
+  persistRuntimePrefix();
+  nodeReplyId();
+  return true;
+}
 static const unsigned long LC_CLEARING_MS = 2000;
 
 static const char EEPROM_MAGIC[4] = {'P', 'D', 'C', 'C'};
@@ -810,7 +893,7 @@ void nodeReplyCfg() {
 void nodeReplyId() {
   Stream* s = boardLink();
   if (!s) return;
-  const char* prefix = boardPrefix();
+  const char* prefix = nodeEffectivePrefix();
   const char* type = boardType();
   s->print("ID ");
   s->print(prefix ? prefix : "?");
@@ -822,7 +905,7 @@ void nodeReplyId() {
 static void emitSensor(const NodePinRoleEntry* sens, bool active) {
   Stream* s = boardLink();
   if (!s) return;
-  s->print(boardPrefix());
+  s->print(nodeEffectivePrefix());
   s->print('-');
   s->print(sens->label);
   s->println(active ? ": DETECTED" : ": CLEAR");
@@ -1300,6 +1383,10 @@ static void handleLine(char* line) {
     nodeReplyId();
     return;
   }
+  if (startsWithi(line, "PREFIX ")) {
+    handlePrefix(line + 7);
+    return;
+  }
   if (startsWithi(line, "TEST ")) {
     handleTest(line + 5);
     return;
@@ -1342,6 +1429,7 @@ void nodeEnginePollStream(Stream* s) {
 }
 
 void nodeEngineBegin() {
+  nodeLoadIdentity();
   gCfgLen = 0;
   gCfgValid = false;
   gLineLen = 0;
@@ -1360,7 +1448,7 @@ void nodeEngineBegin() {
   Stream* s = boardLink();
   if (s) {
     s->print("PanelsDCC Node ");
-    s->print(boardPrefix());
+    s->print(nodeEffectivePrefix());
     s->print(' ');
     s->print(boardType());
     s->println(" READY");

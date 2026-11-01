@@ -11,12 +11,12 @@
 
     <nav class="page-nav" aria-label="Configuration sections">
         <a href="#dcc" class="page-link" data-page-link="dcc">DCC Configuration</a>
-        <a href="#sensors" class="page-link" data-page-link="sensors">Nodes</a>
+        <a href="#nodes" class="page-link" data-page-link="nodes">Nodes</a>
         <a href="#wifi" class="page-link" data-page-link="wifi">WiFi</a>
         <a href="#updates" class="page-link" data-page-link="updates">Updates</a>
     </nav>
 
-    <section id="page-sensors" class="page-section" data-page="sensors">
+    <section id="page-nodes" class="page-section" data-page="nodes">
         <div class="sensors-section">
             <div class="nodes-screen-bar">
                 <h2 id="nodesScreenTitle">Nodes</h2>
@@ -27,7 +27,12 @@
             <!-- VIEW (default) -->
             <div id="nodesView" class="nodes-screen is-active" data-nodes-screen="view">
                 <div class="sensors-toolchain" id="sensorsToolchain">
-                    <p class="update-line"><span class="label">Toolchain:</span> <span id="sensorsToolchainStatus">Checking…</span></p>
+                    <p class="update-line"><span class="label">Images:</span> <span id="sensorsToolchainStatus">Checking…</span></p>
+                    <div class="nodes-inline-actions" id="firmwareZipActions" hidden>
+                        <label class="btn btn-secondary" for="firmwareZipInput">Upload Nano AVR zip</label>
+                        <input type="file" id="firmwareZipInput" accept=".zip,application/zip" hidden>
+                    </div>
+                    <p class="wifi-hint" id="firmwareZipStatus"></p>
                 </div>
                 <div id="sensorsCandidateStrip" class="nodes-candidate-strip" hidden></div>
                 <div id="sensorsBoardList" class="sensors-board-list"></div>
@@ -48,7 +53,7 @@
                     <div class="nodes-method-grid">
                         <button type="button" class="nodes-method-card" data-add-method="usb">
                             <strong>Flash USB board</strong>
-                            <span>Nano / Mega over USB serial</span>
+                            <span>Choose the Arduino. The menu shows the port and the type.</span>
                         </button>
                         <button type="button" class="nodes-method-card" data-add-method="virtual">
                             <strong>Virtual board</strong>
@@ -57,10 +62,6 @@
                         <button type="button" class="nodes-method-card" data-add-method="bluetooth">
                             <strong>Bluetooth (ESP32)</strong>
                             <span>Scan and pair PanelsDCC-*</span>
-                        </button>
-                        <button type="button" class="nodes-method-card" data-add-method="probe">
-                            <strong>Probe USB candidate</strong>
-                            <span>Board already flashed — discover it</span>
                         </button>
                     </div>
                 </div>
@@ -76,6 +77,7 @@
 
                 <div class="nodes-add-panel" data-add-step="action" hidden>
                     <h3 id="nodesAddActionTitle">Working…</h3>
+                    <ol id="sensorFlashStages" class="flash-stages" hidden></ol>
                     <pre id="sensorFlashLog" class="sensors-flash-log"></pre>
                     <div class="nodes-inline-actions">
                         <button type="button" class="btn btn-secondary" id="btnNodesAddCancel">Cancel</button>
@@ -253,6 +255,30 @@
                 </footer>
             </div>
         </div>
+
+        <div id="nodesRestoreModal" class="nodes-modal" hidden>
+            <div class="nodes-modal-backdrop" data-restore-close></div>
+            <div class="nodes-modal-card" role="dialog" aria-modal="true" aria-labelledby="nodesRestoreTitle">
+                <header class="nodes-modal-header">
+                    <h3 id="nodesRestoreTitle">Restore backup</h3>
+                    <button type="button" class="nodes-modal-x" data-restore-close aria-label="Close">&times;</button>
+                </header>
+                <div class="nodes-modal-body">
+                    <p id="nodesRestoreSummary"></p>
+                    <p>Prefix in this backup: <strong id="nodesRestoreFilePrefix"></strong></p>
+                    <p>This board: <strong id="nodesRestoreBoardPrefix"></strong></p>
+                    <p class="wifi-hint">Accept sends that prefix to the board, then loads the configuration. Keep leaves the board's prefix and only loads the configuration.</p>
+                    <p id="nodesRestoreError" class="wifi-hint" hidden></p>
+                </div>
+                <footer class="nodes-modal-footer">
+                    <button type="button" class="btn btn-secondary" data-restore-close>Cancel</button>
+                    <span class="nodes-modal-spacer"></span>
+                    <button type="button" class="btn btn-secondary" id="btnRestoreKeep">Keep this board's prefix</button>
+                    <button type="button" class="btn btn-primary" id="btnRestoreAccept">Use backup prefix</button>
+                </footer>
+            </div>
+        </div>
+        <input type="file" id="nodesRestoreInput" accept="application/json,.json" hidden>
     </section>
 
     <section id="page-updates" class="page-section" data-page="updates">

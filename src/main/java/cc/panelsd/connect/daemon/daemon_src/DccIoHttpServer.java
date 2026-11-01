@@ -69,7 +69,7 @@ final class DccIoHttpServer {
         server.createContext("/api/systems", new SystemsHandler());
         server.createContext("/api/discover", new DiscoverHandler());
         server.createContext("/api/events", new EventsHandler()); // SSE endpoint for live events
-        server.createContext("/api/sensors", new SensorsApiHandler());
+        server.createContext("/api/nodes", new NodesApiHandler());
         // Software update API (single prefix; subpaths routed in handler — HttpServer matches /api/update*)
         server.createContext("/api/update", new UpdateApiHandler());
         server.createContext("/api/wifi", new WifiApiHandler());
@@ -794,14 +794,14 @@ final class DccIoHttpServer {
         }
     }
 
-    private final class SensorsApiHandler extends JsonHandler {
+    private final class NodesApiHandler extends JsonHandler {
         @Override
         protected void handleJson(HttpExchange exchange) throws IOException {
             String path = exchange.getRequestURI().getPath();
             String method = exchange.getRequestMethod();
             Gson gson = new Gson();
 
-            if ("/api/sensors".equals(path) || "/api/sensors/".equals(path)) {
+            if ("/api/nodes".equals(path) || "/api/nodes/".equals(path)) {
                 if (!"GET".equalsIgnoreCase(method)) {
                     sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
                     return;
@@ -810,7 +810,16 @@ final class DccIoHttpServer {
                 return;
             }
 
-            if ("/api/sensors/events".equals(path) || "/api/sensors/events/".equals(path)) {
+            if ("/api/nodes/ports".equals(path) || "/api/nodes/ports/".equals(path)) {
+                if (!"GET".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                sendJsonRaw(exchange, 200, gson.toJson(service.flashPortsJson()));
+                return;
+            }
+
+            if ("/api/nodes/events".equals(path) || "/api/nodes/events/".equals(path)) {
                 if (!"GET".equalsIgnoreCase(method)) {
                     sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
                     return;
@@ -821,25 +830,59 @@ final class DccIoHttpServer {
                 return;
             }
 
-            if ("/api/sensors/toolchain".equals(path) || "/api/sensors/toolchain/".equals(path)) {
+            if ("/api/nodes/images".equals(path) || "/api/nodes/images/".equals(path)) {
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                String contentType = exchange.getRequestHeaders().getFirst("Content-Type");
+                String lowerType = contentType == null ? "" : contentType.toLowerCase(Locale.ROOT);
+                if (!lowerType.contains("application/zip") && !lowerType.contains("application/octet-stream")) {
+                    sendJson(exchange, 415, "{\"error\":\"Send the zip as application/zip\"}");
+                    return;
+                }
+                String lengthHeader = exchange.getRequestHeaders().getFirst("Content-Length");
+                if (lengthHeader != null) {
+                    try {
+                        if (Long.parseLong(lengthHeader.trim()) > 8L * 1024 * 1024) {
+                            sendJson(exchange, 413, "{\"error\":\"Upload is larger than 8MB\"}");
+                            return;
+                        }
+                    } catch (NumberFormatException ignored) {
+                        // Read the body and let the installer enforce the limit.
+                    }
+                }
+                byte[] zip = exchange.getRequestBody().readAllBytes();
+                try {
+                    JsonObject installed = service.getNodeFlasher().installImageZip(zip);
+                    sendJsonRaw(exchange, 201, gson.toJson(installed));
+                } catch (IOException e) {
+                    JsonObject err = new JsonObject();
+                    err.addProperty("error", e.getMessage() == null ? "Upload failed" : e.getMessage());
+                    sendJsonRaw(exchange, 422, gson.toJson(err));
+                }
+                return;
+            }
+
+            if ("/api/nodes/toolchain".equals(path) || "/api/nodes/toolchain/".equals(path)) {
                 if (!"GET".equalsIgnoreCase(method)) {
                     sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
                     return;
                 }
-                sendJsonRaw(exchange, 200, gson.toJson(service.getSensorFlasher().toolchainJson()));
+                sendJsonRaw(exchange, 200, gson.toJson(service.getNodeFlasher().toolchainJson()));
                 return;
             }
 
-            if ("/api/sensors/flash/status".equals(path) || "/api/sensors/flash/status/".equals(path)) {
+            if ("/api/nodes/flash/status".equals(path) || "/api/nodes/flash/status/".equals(path)) {
                 if (!"GET".equalsIgnoreCase(method)) {
                     sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
                     return;
                 }
-                sendJsonRaw(exchange, 200, gson.toJson(service.getSensorFlasher().statusJson()));
+                sendJsonRaw(exchange, 200, gson.toJson(service.getNodeFlasher().statusJson()));
                 return;
             }
 
-            if ("/api/sensors/flash".equals(path) || "/api/sensors/flash/".equals(path)) {
+            if ("/api/nodes/flash".equals(path) || "/api/nodes/flash/".equals(path)) {
                 if (!"POST".equalsIgnoreCase(method)) {
                     sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
                     return;
@@ -852,23 +895,27 @@ final class DccIoHttpServer {
                 }
                 String port = req.get("port").getAsString();
                 String prefix = req.get("prefix").getAsString();
-                String boardType = req.has("boardType") ? req.get("boardType").getAsString() : "nano-avr";
-                boolean started = service.flashSensorBoard(port, prefix, boardType);
+                String boardType = req.has("boardType") && !req.get("boardType").isJsonNull()
+                        ? req.get("boardType").getAsString()
+                        : "detect";
+                boolean clearConfig = req.has("clearConfig") && !req.get("clearConfig").isJsonNull()
+                        && req.get("clearConfig").getAsBoolean();
+                boolean started = service.flashNode(port, prefix, boardType, clearConfig);
                 if (!started) {
                     JsonObject err = new JsonObject();
                     err.addProperty("error", "Flash could not start (busy or invalid prefix)");
-                    err.add("status", service.getSensorFlasher().statusJson());
+                    err.add("status", service.getNodeFlasher().statusJson());
                     sendJsonRaw(exchange, 409, gson.toJson(err));
                     return;
                 }
                 JsonObject ok = new JsonObject();
                 ok.addProperty("ok", true);
-                ok.add("status", service.getSensorFlasher().statusJson());
+                ok.add("status", service.getNodeFlasher().statusJson());
                 sendJsonRaw(exchange, 202, gson.toJson(ok));
                 return;
             }
 
-            if ("/api/sensors/shim".equals(path) || "/api/sensors/shim/".equals(path)) {
+            if ("/api/nodes/shim".equals(path) || "/api/nodes/shim/".equals(path)) {
                 if (!"POST".equalsIgnoreCase(method)) {
                     sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
                     return;
@@ -885,7 +932,7 @@ final class DccIoHttpServer {
                 return;
             }
 
-            if ("/api/sensors/profiles".equals(path) || "/api/sensors/profiles/".equals(path)) {
+            if ("/api/nodes/profiles".equals(path) || "/api/nodes/profiles/".equals(path)) {
                 if (!"GET".equalsIgnoreCase(method)) {
                     sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
                     return;
@@ -897,7 +944,7 @@ final class DccIoHttpServer {
                 return;
             }
 
-            if ("/api/sensors/bluetooth".equals(path) || "/api/sensors/bluetooth/".equals(path)) {
+            if ("/api/nodes/bluetooth".equals(path) || "/api/nodes/bluetooth/".equals(path)) {
                 if (!"GET".equalsIgnoreCase(method)) {
                     sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
                     return;
@@ -906,7 +953,7 @@ final class DccIoHttpServer {
                 return;
             }
 
-            if ("/api/sensors/bluetooth/scan".equals(path) || "/api/sensors/bluetooth/scan/".equals(path)) {
+            if ("/api/nodes/bluetooth/scan".equals(path) || "/api/nodes/bluetooth/scan/".equals(path)) {
                 if (!"POST".equalsIgnoreCase(method) && !"GET".equalsIgnoreCase(method)) {
                     sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
                     return;
@@ -917,7 +964,7 @@ final class DccIoHttpServer {
                 return;
             }
 
-            if ("/api/sensors/bluetooth/pair".equals(path) || "/api/sensors/bluetooth/pair/".equals(path)) {
+            if ("/api/nodes/bluetooth/pair".equals(path) || "/api/nodes/bluetooth/pair/".equals(path)) {
                 if (!"POST".equalsIgnoreCase(method)) {
                     sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
                     return;
@@ -934,7 +981,7 @@ final class DccIoHttpServer {
                 return;
             }
 
-            if ("/api/sensors/probe".equals(path) || "/api/sensors/probe/".equals(path)) {
+            if ("/api/nodes/probe".equals(path) || "/api/nodes/probe/".equals(path)) {
                 if (!"POST".equalsIgnoreCase(method)) {
                     sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
                     return;
@@ -957,9 +1004,9 @@ final class DccIoHttpServer {
                 return;
             }
 
-            // /api/sensors/{id}/release or /resume
-            if (path.startsWith("/api/sensors/")) {
-                String rest = path.substring("/api/sensors/".length());
+            // /api/nodes/{id}/release or /resume
+            if (path.startsWith("/api/nodes/")) {
+                String rest = path.substring("/api/nodes/".length());
                 if (rest.endsWith("/")) {
                     rest = rest.substring(0, rest.length() - 1);
                 }
@@ -973,7 +1020,7 @@ final class DccIoHttpServer {
                             return;
                         }
                         try {
-                            service.releaseSensorBoard(id);
+                            service.releaseNode(id);
                             sendJson(exchange, 200, "{\"ok\":true}");
                         } catch (IllegalArgumentException e) {
                             sendJsonError(exchange, 404, e.getMessage());
@@ -986,7 +1033,7 @@ final class DccIoHttpServer {
                             return;
                         }
                         try {
-                            service.resumeSensorBoard(id);
+                            service.resumeNode(id);
                             sendJson(exchange, 200, "{\"ok\":true}");
                         } catch (IllegalArgumentException e) {
                             sendJsonError(exchange, 404, e.getMessage());
@@ -1012,6 +1059,24 @@ final class DccIoHttpServer {
                         }
                         return;
                     }
+                    if ("prefix".equals(action)) {
+                        if (!"POST".equalsIgnoreCase(method)) {
+                            sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                            return;
+                        }
+                        String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                        JsonObject req = body.isEmpty() ? new JsonObject() : gson.fromJson(body, JsonObject.class);
+                        String prefix = req != null && req.has("prefix") ? req.get("prefix").getAsString() : "";
+                        try {
+                            sendJsonRaw(exchange, 200, gson.toJson(service.setNodePrefix(id, prefix)));
+                        } catch (IllegalStateException e) {
+                            sendJsonError(exchange, 409, e.getMessage());
+                        } catch (IllegalArgumentException e) {
+                            int status = e.getMessage() != null && e.getMessage().startsWith("Node not found") ? 404 : 422;
+                            sendJsonError(exchange, status, e.getMessage());
+                        }
+                        return;
+                    }
                     if ("config".equals(action)) {
                         if (!"POST".equalsIgnoreCase(method)) {
                             sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
@@ -1025,6 +1090,8 @@ final class DccIoHttpServer {
                         }
                         try {
                             sendJsonRaw(exchange, 200, gson.toJson(service.pushNodeConfig(id, req)));
+                        } catch (IllegalStateException e) {
+                            sendJsonError(exchange, 409, e.getMessage());
                         } catch (IllegalArgumentException e) {
                             sendJsonError(exchange, 404, e.getMessage());
                         }

@@ -110,16 +110,16 @@
       "descriptionPatterns": ["dcc++", "dccpp"]
     },
     {
-      "name": "PanelsDCC Sensor Board",
+      "name": "PanelsDCC Node",
       "vendorId": "0x1a86",
       "productId": "0x7523",
-      "systemType": "panelsdcc-sensor-board",
+      "systemType": "panelsdcc-node",
       "needsProbe": false,
       "defaultPort": null,
       "config": {
         "baudRate": "9600"
       },
-      "descriptionPatterns": ["panelsdcc sensor board"]
+      "descriptionPatterns": ["panelsdcc node"]
     },
     {
       "name": "DCC-EX CSB1 / ESP32-S3 (USB CDC)",

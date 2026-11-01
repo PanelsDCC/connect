@@ -15,16 +15,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class UsbSerialProbeTest {
 
     @Test
-    void classifiesSensorBoardFrom9600Banner() {
+    void classifiesNodeFrom9600Banner() {
         ScriptedPortOps ops = new ScriptedPortOps();
-        ops.whenOpen(9600, "PanelsDCC Sensor Board A READY\n");
+        ops.whenOpen(9600, "PanelsDCC Node A nano-avr READY\n");
         UsbSerialProbe probe = new UsbSerialProbe(() -> ops);
 
         UsbSerialProbe.ProbeResult result = probe.classify("ttyUSB0");
 
-        assertEquals(UsbSerialProbe.DeviceType.SENSOR_BOARD, result.type);
+        assertEquals(UsbSerialProbe.DeviceType.NODE, result.type);
         assertEquals("A", result.prefix);
-        assertEquals(DeviceDiscoveryService.SYSTEM_TYPE_SENSOR_BOARD, result.systemType());
+        assertEquals(DeviceDiscoveryService.SYSTEM_TYPE_NODE, result.systemType());
         assertTrue(ops.openBauds.contains(9600));
         assertTrue(ops.closed);
     }
@@ -53,7 +53,7 @@ class UsbSerialProbeTest {
 
         UsbSerialProbe.ProbeResult result = probe.classify("ttyACM0");
 
-        assertEquals(UsbSerialProbe.DeviceType.SENSOR_BOARD, result.type);
+        assertEquals(UsbSerialProbe.DeviceType.NODE, result.type);
         assertEquals("B", result.prefix);
         assertEquals("nano-esp32", result.boardType);
         assertTrue(ops.writes.stream().anyMatch(w -> new String(w, StandardCharsets.UTF_8).startsWith("ID?")));
@@ -69,7 +69,7 @@ class UsbSerialProbeTest {
 
         UsbSerialProbe.ProbeResult result = probe.classify("ttyACM0");
 
-        assertEquals(UsbSerialProbe.DeviceType.SENSOR_BOARD, result.type);
+        assertEquals(UsbSerialProbe.DeviceType.NODE, result.type);
         assertEquals("A", result.prefix);
         assertNull(result.boardType);
         assertTrue(ops.writes.stream().anyMatch(w -> new String(w, StandardCharsets.UTF_8).startsWith("CFG?")));
@@ -84,23 +84,53 @@ class UsbSerialProbeTest {
 
         UsbSerialProbe.ProbeResult result = probe.classify("ttyACM0");
 
-        assertEquals(UsbSerialProbe.DeviceType.SENSOR_BOARD, result.type);
+        assertEquals(UsbSerialProbe.DeviceType.NODE, result.type);
         assertNull(result.prefix);
         assertNull(result.boardType);
     }
 
     @Test
-    void retriesSensorBannerOnSecondOpen() {
+    void retriesNodeBannerOnSecondOpen() {
         ScriptedPortOps ops = new ScriptedPortOps();
         ops.whenOpen(9600, "");
-        ops.whenOpen(9600, "PanelsDCC Sensor Board B READY\n");
+        ops.whenOpen(9600, "PanelsDCC Node B READY\n");
         UsbSerialProbe probe = new UsbSerialProbe(() -> ops);
 
         UsbSerialProbe.ProbeResult result = probe.classify("ttyUSB3");
 
-        assertEquals(UsbSerialProbe.DeviceType.SENSOR_BOARD, result.type);
+        assertEquals(UsbSerialProbe.DeviceType.NODE, result.type);
         assertEquals("B", result.prefix);
         assertEquals(2, ops.openBauds.stream().filter(b -> b == 9600).count());
+        assertNull(result.boardType);
+    }
+
+    @Test
+    void classifiesNodeBannerWithImageVersion() {
+        ScriptedPortOps ops = new ScriptedPortOps();
+        ops.whenOpen(9600, "PanelsDCC Node A nano-esp32 v2026-10-27 READY\n");
+        UsbSerialProbe probe = new UsbSerialProbe(() -> ops);
+
+        UsbSerialProbe.ProbeResult result = probe.classify("ttyACM0");
+
+        assertEquals(UsbSerialProbe.DeviceType.NODE, result.type);
+        assertEquals("A", result.prefix);
+        assertEquals("nano-esp32", result.boardType);
+        assertEquals("2026-10-27", result.firmwareVersion);
+    }
+
+    @Test
+    void classifiesIdReplyWithImageVersion() {
+        ScriptedPortOps ops = new ScriptedPortOps();
+        ops.whenOpen(9600, "");
+        ops.replyToWrite("ID B nano-esp32 2026-10-27\n");
+        UsbSerialProbe probe = new UsbSerialProbe(() -> ops);
+
+        UsbSerialProbe.ProbeResult result = probe.classify("ttyACM0");
+
+        assertEquals(UsbSerialProbe.DeviceType.NODE, result.type);
+        assertEquals("B", result.prefix);
+        assertEquals("nano-esp32", result.boardType);
+        assertEquals("2026-10-27", result.firmwareVersion);
     }
 
     @Test
@@ -117,9 +147,10 @@ class UsbSerialProbeTest {
     }
 
     @Test
-    void parseSensorReadyPrefixAcceptsMultiLetterPrefix() {
-        assertEquals("AA", UsbSerialProbe.parseSensorReadyPrefix("PanelsDCC Sensor Board AA READY"));
-        assertNull(UsbSerialProbe.parseSensorReadyPrefix("hello"));
+    void parseNodeReadyPrefixAcceptsMultiLetterPrefix() {
+        assertEquals("AA", UsbSerialProbe.parseNodeReadyPrefix("PanelsDCC Node AA READY"));
+        assertEquals("AA", UsbSerialProbe.parseNodeReadyPrefix("PanelsDCC Node AA nano-avr READY"));
+        assertEquals("nano-avr", UsbSerialProbe.parseNodeReadyBoardType("PanelsDCC Node AA nano-avr READY"));
     }
 
     @Test

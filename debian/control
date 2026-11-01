@@ -8,7 +8,7 @@ Homepage: https://github.com/PanelsDCC/connect
 
 Package: panelsdcc-connect
 Architecture: all
-Depends: ${misc:Depends}, default-jre-headless (>= 11), curl, jq, tar, gzip
+Depends: ${misc:Depends}, default-jre-headless (>= 11), curl, jq, tar, gzip, avrdude, esptool
 Recommends: network-manager
 Description: panelsDCC-connect - RESTful API for DCC command stations
  A standalone Java daemon that provides a simple, clean API for controlling

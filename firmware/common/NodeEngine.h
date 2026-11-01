@@ -192,6 +192,14 @@ Stream* boardLink();
 const char* boardPrefix();
 const char* boardType();
 
+/**
+ * Load a PREFIX override (EEPROM tail on AVR, NVS key "prefix" on ESP32).
+ * Safe to call before nodeEngineBegin(); begin calls it again.
+ */
+void nodeLoadIdentity();
+/** PREFIX override when set, otherwise the compiled boardPrefix(). */
+const char* nodeEffectivePrefix();
+
 void nodeEngineBegin();
 /** Poll boardLink(), then scan sensors and tick outputs (USB boards). */
 void nodeEngineLoop();
@@ -203,5 +211,5 @@ void nodeEngineTick();
 /** Persist / apply helpers exposed for tests if needed. */
 bool nodeApplyCfgJson(const char* json);
 void nodeReplyCfg();
-/** `ID?` → `ID {prefix} {boardType}` so a host can learn identity without a reboot. */
+/** `ID?` → `ID {prefix} {boardType}`. Prefix is the PREFIX override when stored. */
 void nodeReplyId();

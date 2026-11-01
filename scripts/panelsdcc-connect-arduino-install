@@ -1,6 +1,6 @@
 #!/bin/bash
-# Install arduino-cli + arduino:avr core for panelsdcc-connect sensor board flashing.
-# Headless / non-interactive. Run as root (from postinst or manually).
+# Install arduino-cli + cores on a workstation that builds firmware/images.
+# The Debian package does not install or run this script.
 
 set -e
 

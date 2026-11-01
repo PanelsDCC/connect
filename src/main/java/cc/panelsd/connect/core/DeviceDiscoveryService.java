@@ -26,7 +26,7 @@ import com.google.gson.JsonObject;
 public class DeviceDiscoveryService {
 
     public static final String SYSTEM_TYPE_USB_SERIAL_CANDIDATE = "usb-serial-candidate";
-    public static final String SYSTEM_TYPE_SENSOR_BOARD = "panelsdcc-sensor-board";
+    public static final String SYSTEM_TYPE_NODE = "panelsdcc-node";
     public static final String SYSTEM_TYPE_DCCPP = "dccpp";
 
     private static final String CONFIG_FILE = "device-discovery-config.json";
@@ -161,6 +161,9 @@ public class DeviceDiscoveryService {
                     if (!isPortPresent(portName)) {
                         continue;
                     }
+                    if (isMacDialinTwin(portName)) {
+                        continue;
+                    }
                     int vendorId = ((Integer) getVendorID.invoke(port));
                     int productId = ((Integer) getProductID.invoke(port));
                     String description = (String) getDescriptivePortName.invoke(port);
@@ -194,6 +197,21 @@ public class DeviceDiscoveryService {
     /**
      * Best-effort check to see if the OS still exposes the port (helps when jSerialComm caches).
      */
+    /**
+     * {@code /dev/tty.usbserial-1140} is the same CH340 as {@code /dev/cu.usbserial-1140}.
+     * Opening both makes the post-flash prefix write fail with "port busy".
+     */
+    public static boolean isMacDialinTwin(String portName) {
+        String bare = portName == null ? "" : portName;
+        if (bare.startsWith("/dev/")) {
+            bare = bare.substring(5);
+        }
+        if (!bare.startsWith("tty.")) {
+            return false;
+        }
+        return Files.exists(Paths.get("/dev/cu." + bare.substring(4)));
+    }
+
     public boolean isPortPresent(String portName) {
         if (portName == null || portName.isEmpty()) {
             return false;
