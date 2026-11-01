@@ -8,7 +8,7 @@
       "mcu": "atmega2560",
       "programmer": "wiring",
       "baud": 115200,
-      "sha256": "401e9b3ba61a83dba8de2f4c026fa36c29885719f146271819002eb17e765e14"
+      "sha256": "d651ffa6e53d441f18f52582fb51f304fd5798fc889dcbf9c1a0a11055deeef8"
     },
     {
       "id": "mega-esp32",
@@ -44,7 +44,7 @@
         {
           "filename": "mega-esp32.bin",
           "offset": "0x10000",
-          "sha256": "b093d144ba396529e148b5688619958dd7fb77eb8ec3fe01d4484878c90893b7"
+          "sha256": "29a95a311e0b96d7ed19f2c81b81dcfe4b256c1b0b1395973c7cb0a307d4607d"
         }
       ]
     },
@@ -82,7 +82,7 @@
         {
           "filename": "nano-esp32.bin",
           "offset": "0x10000",
-          "sha256": "748e4c2942e853cea15e1d573bd8c61ca0865c43f420477cc449d18b6b9d64b0"
+          "sha256": "84788aa1af557fd724a6a9bb82a3fc1bfe8c08987c7b14e9af4803bf4c207846"
         },
         {
           "filename": "nano-esp32.recovery.bin",

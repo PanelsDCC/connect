@@ -170,29 +170,35 @@ class NodeOutputMirrorTest {
         JsonObject point = output("Point", "servo", pins("D9"),
                 trig("Position 1", 1, "Forward"),
                 trig("Position 2", 1, "Reverse"));
+        JsonObject pointParams = new JsonObject();
+        pointParams.addProperty("travelMs", 80);
+        point.add("params", pointParams);
         point.getAsJsonArray("triggers").get(0).getAsJsonObject().addProperty("deg", 20);
         point.getAsJsonArray("triggers").get(1).getAsJsonObject().addProperty("deg", 90);
         JsonObject crossing = output("Crossing", "level_crossing",
                 pins("D8", "D12", "D13", "D10", "D11"),
                 trig("open", 2, "Forward"),
                 trig("closed", 2, "Reverse"));
+        JsonObject xcParams = new JsonObject();
+        xcParams.addProperty("barrierTravelMs", 80);
+        crossing.add("params", xcParams);
         mirror.syncConfig("Z", outs(point, crossing));
 
         mirror.onAccessory(1, true);
+        assertTrue(awaitDeg(mirror, "Z", 0, 20, 1000));
         JsonObject servo = mirror.statesJson("Z").get(0).getAsJsonObject();
         assertEquals("20°", servo.getAsJsonObject("pins").get("D9").getAsString());
 
         mirror.onCommandLine("Z", "TEST SERVO D9 45");
+        assertTrue(awaitDeg(mirror, "Z", 0, 45, 1000));
         servo = mirror.statesJson("Z").get(0).getAsJsonObject();
-        assertEquals(45, servo.get("deg").getAsInt());
         assertEquals("45°", servo.get("label").getAsString());
         assertEquals("45°", servo.getAsJsonObject("pins").get("D9").getAsString());
 
         mirror.onCommandLine("Z", "SERVO D10 30");
-        Thread.sleep(250);
+        assertTrue(awaitBarrierDeg(mirror, "Z", 1, 30, 1000));
         JsonObject barriers = mirror.statesJson("Z").get(1).getAsJsonObject();
         assertEquals("manual", barriers.get("phase").getAsString());
-        assertEquals(30, barriers.get("barrierDeg").getAsInt());
         assertEquals("30°", barriers.getAsJsonObject("pins").get("D10").getAsString());
         assertEquals("30°", barriers.getAsJsonObject("pins").get("D11").getAsString());
     }
@@ -206,6 +212,38 @@ class NodeOutputMirrorTest {
                 return true;
             }
             Thread.sleep(50);
+        }
+        return false;
+    }
+
+    private static boolean awaitDeg(NodeOutputMirror mirror, String prefix, int ix, int want, long timeoutMs)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            JsonArray arr = mirror.statesJson(prefix);
+            if (arr.size() > ix) {
+                JsonObject o = arr.get(ix).getAsJsonObject();
+                if (o.has("deg") && o.get("deg").getAsInt() == want) {
+                    return true;
+                }
+            }
+            Thread.sleep(20);
+        }
+        return false;
+    }
+
+    private static boolean awaitBarrierDeg(NodeOutputMirror mirror, String prefix, int ix, int want, long timeoutMs)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            JsonArray arr = mirror.statesJson(prefix);
+            if (arr.size() > ix) {
+                JsonObject o = arr.get(ix).getAsJsonObject();
+                if (o.has("barrierDeg") && o.get("barrierDeg").getAsInt() == want) {
+                    return true;
+                }
+            }
+            Thread.sleep(20);
         }
         return false;
     }

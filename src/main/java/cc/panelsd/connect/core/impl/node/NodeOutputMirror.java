@@ -295,6 +295,10 @@ public final class NodeOutputMirror {
         boolean wigwagLeftOn = true;
         long pulseUntilMs = 0L;
         int barrierDeg = 90;
+        /** Servo / manual barrier travel (mirrors firmware travelMs pacing). */
+        Integer travelFromDeg = null;
+        Integer travelTargetDeg = null;
+        long travelStartMs = 0L;
 
         OutputMirror(int ix, String type, String name, JsonObject params) {
             this.ix = ix;
@@ -436,10 +440,8 @@ public final class NodeOutputMirror {
                 phase = null;
                 pulseUntilMs = now + paramInt("pulseMs", 250);
             } else if (NodeOutputSchemas.SERVO.equals(type)) {
-                state = "position";
-                deg = t.deg != null ? t.deg : 0;
-                label = t.label != null ? t.label : (deg + "°");
-                phase = null;
+                int to = t.deg != null ? t.deg : 0;
+                startServoTravel(to, t.label != null ? t.label : (to + "°"));
             } else if (NodeOutputSchemas.FADE.equals(type)) {
                 state = "level";
                 brightness = t.brightness != null ? t.brightness : 0;
@@ -470,12 +472,9 @@ public final class NodeOutputMirror {
             }
         }
 
-        void applyManualServo(int pinIx, int deg) {
+        void applyManualServo(int pinIx, int toDeg) {
             if (NodeOutputSchemas.SERVO.equals(type)) {
-                state = "position";
-                this.deg = deg;
-                label = deg + "°";
-                phase = null;
+                startServoTravel(toDeg, toDeg + "°");
                 return;
             }
             if (!NodeOutputSchemas.LEVEL_CROSSING.equals(type)) {
@@ -486,11 +485,35 @@ public final class NodeOutputMirror {
             if (!barrier) {
                 return;
             }
+            long now = System.currentTimeMillis();
+            travelFromDeg = barrierDeg;
+            travelTargetDeg = clampDeg(toDeg);
+            travelStartMs = now;
             state = "manual";
             phase = "manual";
             phaseUntilMs = 0L;
-            barrierDeg = deg;
-            label = deg + "°";
+            label = travelTargetDeg + "°";
+        }
+
+        private void startServoTravel(int toDeg, String lbl) {
+            long now = System.currentTimeMillis();
+            int to = clampDeg(toDeg);
+            travelFromDeg = deg != null ? deg : 0;
+            travelTargetDeg = to;
+            travelStartMs = now;
+            state = "position";
+            phase = "travel";
+            label = lbl;
+        }
+
+        private static int clampDeg(int d) {
+            if (d < 0) {
+                return 0;
+            }
+            if (d > 180) {
+                return 180;
+            }
+            return d;
         }
 
         private void applySignalTrigger(Trigger t) {
@@ -581,9 +604,42 @@ public final class NodeOutputMirror {
                 label = "Off";
                 pulseUntilMs = 0L;
             }
+            if (NodeOutputSchemas.SERVO.equals(type)) {
+                tickServoTravel(now);
+            }
             if (NodeOutputSchemas.LEVEL_CROSSING.equals(type)) {
                 tickCrossing(now);
             }
+        }
+
+        private void tickServoTravel(long now) {
+            if (travelTargetDeg == null || travelFromDeg == null) {
+                return;
+            }
+            int arrived = interpolateTravel(now, travelFromDeg, travelTargetDeg,
+                    paramInt("travelMs", 1000), travelStartMs);
+            deg = arrived;
+            label = arrived + "°";
+            if (arrived == travelTargetDeg) {
+                phase = null;
+                travelFromDeg = null;
+                travelTargetDeg = null;
+            }
+        }
+
+        /** Same pacing as firmware: travelMs is full 0–180° time, scaled by delta. */
+        private static int interpolateTravel(long now, int from, int to, int travelMs, long startMs) {
+            int dur = Math.max(1, travelMs);
+            int delta = Math.abs(to - from);
+            int need = Math.max(1, (int) ((long) dur * delta / 180L));
+            double t = (now - startMs) / (double) need;
+            if (t >= 1.0) {
+                return to;
+            }
+            if (t <= 0) {
+                return from;
+            }
+            return (int) Math.round(from + (to - from) * t);
         }
 
         private void tickCrossing(long now) {
@@ -606,6 +662,12 @@ public final class NodeOutputMirror {
             } else if ("barriers_opening".equals(phase)) {
                 double t = Math.min(1.0, Math.max(0.0, (now - phaseStartedMs) / (double) travel));
                 barrierDeg = (int) Math.round(closed + (open - closed) * t);
+            } else if ("manual".equals(phase) && travelTargetDeg != null && travelFromDeg != null) {
+                barrierDeg = interpolateTravel(now, travelFromDeg, travelTargetDeg, travel, travelStartMs);
+                if (barrierDeg == travelTargetDeg) {
+                    travelFromDeg = null;
+                    travelTargetDeg = null;
+                }
             } else if (phaseEquals("closed")) {
                 barrierDeg = closed;
             } else if (phaseEquals("open", "clearing", "warning", "wigwag")) {
@@ -707,8 +769,14 @@ public final class NodeOutputMirror {
         boolean isAnimating() {
             if (NodeOutputSchemas.LEVEL_CROSSING.equals(type)) {
                 // Include closed: wig-wags keep flashing (CSS-driven; still mark active for UI)
-                return phaseEquals("warning", "wigwag", "barriers_closing", "closed",
-                        "barriers_opening", "clearing");
+                if (phaseEquals("warning", "wigwag", "barriers_closing", "closed",
+                        "barriers_opening", "clearing")) {
+                    return true;
+                }
+                return "manual".equals(phase) && travelTargetDeg != null;
+            }
+            if (NodeOutputSchemas.SERVO.equals(type)) {
+                return travelTargetDeg != null;
             }
             if (NodeOutputSchemas.DIGITAL_SIGNAL.equals(type)) {
                 return !flashingPins.isEmpty();
