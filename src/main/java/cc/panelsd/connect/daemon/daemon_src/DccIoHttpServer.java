@@ -882,6 +882,23 @@ final class DccIoHttpServer {
                 return;
             }
 
+            if ("/api/nodes/identify".equals(path) || "/api/nodes/identify/".equals(path)) {
+                if (!"POST".equalsIgnoreCase(method)) {
+                    sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                    return;
+                }
+                String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                JsonObject req = body.isEmpty() ? new JsonObject() : gson.fromJson(body, JsonObject.class);
+                if (req == null || !req.has("port")) {
+                    sendJson(exchange, 400, "{\"error\":\"port required\"}");
+                    return;
+                }
+                JsonObject result = service.getNodeFlasher().identifyPort(req.get("port").getAsString());
+                int code = result.has("ok") && result.get("ok").getAsBoolean() ? 200 : 422;
+                sendJsonRaw(exchange, code, gson.toJson(result));
+                return;
+            }
+
             if ("/api/nodes/flash".equals(path) || "/api/nodes/flash/".equals(path)) {
                 if (!"POST".equalsIgnoreCase(method)) {
                     sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");

@@ -1047,6 +1047,20 @@ input[type="file"].file-input-hidden {
     margin-top: 16px;
 }
 
+.nodes-flash-port-row {
+    margin-top: 0;
+    align-items: center;
+}
+
+.nodes-flash-port-row select {
+    flex: 1 1 12rem;
+    min-width: 10rem;
+}
+
+.nodes-flash-warn {
+    color: #8a5a00;
+}
+
 .nodes-probe-list,
 .nodes-bt-results {
     display: grid;

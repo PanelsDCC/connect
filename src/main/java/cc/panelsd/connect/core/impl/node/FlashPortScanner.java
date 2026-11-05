@@ -1,9 +1,6 @@
 package cc.panelsd.connect.core.impl.node;
 
 import cc.panelsd.connect.core.DeviceDiscoveryService;
-import cc.panelsd.connect.core.UsbSerialProbe;
-import cc.panelsd.connect.core.UsbSerialProbe.DeviceType;
-import cc.panelsd.connect.core.UsbSerialProbe.ProbeResult;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -13,42 +10,23 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
 
 /**
- * Ports worth offering on the Flash USB form.
+ * Ports offered on the Flash USB form.
  * <p>
- * Official boards are named from the USB vendor, product, and description.
- * Generic UART bridges (CH340, FTDI, CP210x) are asked {@code ID?} at 9600,
- * off the request thread, and only listed when they answer as a node.
- * esptool and avrdude are not used here: both reset the board and, on a
- * Nano ESP32, drop the USB port.
+ * Official boards are labelled from USB vendor / product / description when
+ * that identity is unambiguous. Generic UART bridges (CH340, FTDI, CP210x) are
+ * always listed too — the user must pick the right port. Connect does not hide
+ * a port because it might be a command station; flash shows a warning instead.
+ * Chip identity for Auto-detect is read later with avrdude / esptool.
  */
 public final class FlashPortScanner {
 
-    private static final long NODE_TTL_MS = 15000L;
-    private static final long MISS_TTL_MS = 20000L;
-    private static final long BUSY_TTL_MS = 2000L;
-
-    private final NodeProbe probe;
-    private final Executor executor;
-    private final Map<String, Cached> cache = new ConcurrentHashMap<>();
-    private final Set<String> inflight = ConcurrentHashMap.newKeySet();
-
-    public FlashPortScanner(UsbSerialProbe probe) {
-        this(probe::verifyNode, daemonExecutor());
+    public FlashPortScanner() {
     }
 
-    FlashPortScanner(NodeProbe probe, Executor executor) {
-        this.probe = probe;
-        this.executor = executor;
-    }
-
-    @FunctionalInterface
-    interface NodeProbe {
-        ProbeResult verify(String portName);
+    /** Kept for callers that previously injected a probe; listing no longer opens ports. */
+    public FlashPortScanner(Object ignoredProbe) {
     }
 
     public static final class ListedPort {
@@ -79,7 +57,7 @@ public final class FlashPortScanner {
 
     /**
      * @param sessionTypes board type already known because a node session holds the port
-     * @param commandStationPorts ports Connect is using as a command station; not probed
+     * @param commandStationPorts ignored — flashing is the user's choice; UI warns
      */
     public List<ListedPort> list(List<RawPort> ports, Map<String, String> sessionTypes, Set<String> commandStationPorts) {
         List<ListedPort> out = new ArrayList<>();
@@ -111,17 +89,7 @@ public final class FlashPortScanner {
             if (!isUartBridge(raw.vendorId)) {
                 continue;
             }
-            if (skipPort(commandStationPorts, bare)) {
-                continue;
-            }
-            ProbeResult known = fresh(bare);
-            if (known == null) {
-                schedule(raw.name, bare);
-                known = fresh(bare);
-            }
-            if (known != null && known.type == DeviceType.NODE && BoardProfile.isValid(known.boardType)) {
-                out.add(listed(raw.name, known.boardType));
-            }
+            out.add(new ListedPort(raw.name, NodeFlasher.DETECT, uartLabel(raw)));
         }
         return out;
     }
@@ -135,7 +103,7 @@ public final class FlashPortScanner {
 
     /**
      * Board id when the USB identity is one we ship an image for, otherwise null.
-     * CH340 and similar bridges stay null so a command station is not labelled an Arduino.
+     * CH340 and similar bridges stay null — the chip is read at flash time.
      */
     static String boardTypeForIdentity(int vendorId, int productId, String text) {
         int vid = vendorId & 0xFFFF;
@@ -158,17 +126,6 @@ public final class FlashPortScanner {
         return null;
     }
 
-    private static boolean skipPort(Set<String> skip, String bare) {
-        if (skip == null || bare == null) {
-            return false;
-        }
-        if (skip.contains(bare)) {
-            return true;
-        }
-        String key = NodeSupport.serialDeviceKey(bare);
-        return key != null && skip.contains(key);
-    }
-
     /** ROM download mode. The running Nano ESP32 uses a different USB id and a longer port name. */
     static boolean isEspRomBootloader(int vendorId, int productId) {
         return (vendorId & 0xFFFF) == 0x303A && (productId & 0xFFFF) == 0x1001;
@@ -177,6 +134,15 @@ public final class FlashPortScanner {
     static boolean isUartBridge(int vendorId) {
         int vid = vendorId & 0xFFFF;
         return vid == 0x1A86 || vid == 0x0403 || vid == 0x10C4;
+    }
+
+    static String uartLabel(RawPort raw) {
+        int vid = raw.vendorId & 0xFFFF;
+        String chip = vid == 0x1A86 ? "CH340"
+                : vid == 0x0403 ? "FTDI"
+                : vid == 0x10C4 ? "CP210x"
+                : "USB serial";
+        return chip + " — choose carefully";
     }
 
     public static List<RawPort> readLivePorts() {
@@ -233,54 +199,5 @@ public final class FlashPortScanner {
         BoardProfile profile = BoardProfile.get(boardType);
         String label = profile == null ? boardType : profile.label;
         return new ListedPort(port, boardType, label);
-    }
-
-    private ProbeResult fresh(String bare) {
-        Cached cached = cache.get(bare);
-        if (cached == null) {
-            return null;
-        }
-        long age = System.currentTimeMillis() - cached.at;
-        long ttl = cached.result.portBusy
-                ? BUSY_TTL_MS
-                : (cached.result.type == DeviceType.NODE ? NODE_TTL_MS : MISS_TTL_MS);
-        return age <= ttl ? cached.result : null;
-    }
-
-    private void schedule(String portName, String bare) {
-        if (!inflight.add(bare)) {
-            return;
-        }
-        executor.execute(() -> {
-            try {
-                ProbeResult result = probe.verify(portName);
-                if (result == null) {
-                    result = ProbeResult.unknown();
-                }
-                cache.put(bare, new Cached(result, System.currentTimeMillis()));
-            } catch (Exception e) {
-                cache.put(bare, new Cached(ProbeResult.unknown(), System.currentTimeMillis()));
-            } finally {
-                inflight.remove(bare);
-            }
-        });
-    }
-
-    private static Executor daemonExecutor() {
-        return Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "flash-port-probe");
-            t.setDaemon(true);
-            return t;
-        });
-    }
-
-    private static final class Cached {
-        final ProbeResult result;
-        final long at;
-
-        Cached(ProbeResult result, long at) {
-            this.result = result;
-            this.at = at;
-        }
     }
 }

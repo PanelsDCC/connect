@@ -2744,11 +2744,8 @@ function flashPortChoices() {
 }
 
 function selectedFlashBoardType() {
-  const fromDraft = nodesUi.addDraft?.usbBoardType;
-  if (fromDraft) return fromDraft;
-  const port = document.getElementById('addUsbPort')?.value || nodesUi.addDraft?.usbPort;
-  const match = flashPortChoices().find((o) => o.value === port);
-  return match?.boardType || '';
+  const chosen = document.getElementById('addUsbType')?.value || nodesUi.addDraft?.usbBoardType || '';
+  return chosen === 'detect' ? '' : chosen;
 }
 
 async function loadSensorFlashPorts() {
@@ -2810,18 +2807,12 @@ async function loadSensorsToolchain() {
     const tools = [];
     if (!data.avrdude) tools.push('avrdude');
     if (!data.esptool) tools.push('esptool');
-    // Zip upload is only for custom Nano AVR — show on the list page only when missing.
-    const zipActions = document.getElementById('firmwareZipActions');
-    const nano = (data.profiles || []).find((p) => p.id === 'nano-avr');
-    if (zipActions) {
-      zipActions.hidden = !(nano && nano.requiresUpload && !nano.imagePresent);
-    }
     if (missing.length) {
       el.textContent = 'Images missing: ' + missing.join(', ');
       el.style.color = '#a00';
     } else if (needsZip.length) {
-      el.textContent = 'Nano AVR needs an uploaded zip. Other images are ready.';
-      el.style.color = '#a05a00';
+      el.textContent = 'Nano AVR zip is uploaded when you flash a Nano.';
+      el.style.color = '#555';
     } else if (tools.length) {
       el.textContent = 'Images ready; install ' + tools.join(' and ');
       el.style.color = '#a05a00';
@@ -3208,7 +3199,7 @@ function setFlashBusy(busy) {
   if (backBtn) backBtn.disabled = !!busy;
   if (cancelBtn) cancelBtn.disabled = false; // leave screen only
   if (nextBtn) nextBtn.disabled = !!busy;
-  ['addUsbPort', 'addUsbPrefix', 'addUsbClearConfig'].forEach((id) => {
+  ['addUsbPort', 'addUsbType', 'addUsbPrefix', 'addUsbClearConfig'].forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.disabled = !!busy;
   });
@@ -3419,35 +3410,58 @@ function renderNodesAddDetailsBody() {
         (o.value === selectedPort ? ' selected' : '') + '>' + escapeHtml(o.text) + '</option>')
       .join('');
     const prefix = draft.usbPrefix || suggested;
+    const portGuess = choices.find((c) => c.value === selectedPort)?.boardType || '';
     const selectedType = draft.usbBoardType
-      || choices.find((c) => c.value === selectedPort)?.boardType
-      || '';
+      || (portGuess && portGuess !== 'detect' ? portGuess : '');
     const bakedNano = selectedType === 'nano-avr';
     const clearChecked = !bakedNano && draft.clearConfig ? ' checked' : '';
-    const clearRow = bakedNano
-      ? '<p class="wifi-hint">Nano AVR layout is baked into the image — there is no clear-config step.</p>'
-      : ('<label class="nodes-probe-row"><input type="checkbox" id="addUsbClearConfig"' + clearChecked + '>' +
-        ' Start fresh — clear saved layout on the board</label>');
-    // Zip upload is only for custom Nano AVR builds. Mega / ESP32 use shipped images.
+    const clearRow = !selectedType
+      ? ''
+      : (bakedNano
+        ? '<p class="wifi-hint">Nano AVR layout is baked into the image — there is no clear-config step.</p>'
+        : ('<label class="nodes-probe-row"><input type="checkbox" id="addUsbClearConfig"' + clearChecked + '>' +
+          ' Start fresh — clear saved layout on the board</label>'));
+    const typeOpts = '<option value="">' + (selectedPort ? 'Detect or choose…' : 'Select a port first') + '</option>' +
+      profiles.map((p) => '<option value="' + escapeHtml(p.id) + '"' +
+        (p.id === selectedType ? ' selected' : '') + '>' + escapeHtml(p.label || p.id) + '</option>')
+        .join('');
+    // Zip upload only when flashing a Nano AVR — not on the Nodes list page.
     const zipRow = bakedNano
       ? ('<div class="form-group"><label for="addUsbZip">Nano AVR image zip</label>' +
         '<input type="file" id="addUsbZip" accept=".zip,application/zip">' +
         '<button type="button" class="btn btn-secondary" id="btnAddUsbZip">Upload zip</button>' +
-        '<p class="wifi-hint" id="addUsbZipStatus"></p></div>')
+        '<p class="wifi-hint" id="addUsbZipStatus">' +
+        (profileNeedsUpload('nano-avr')
+          ? 'Required — upload the zip from panelsDCC-Nodes.'
+          : 'Optional — replace the zip already on this Pi.') +
+        '</p></div>')
       : '';
+    const detectStatus = draft.usbIdentifiedLabel
+      ? ('Detected: ' + draft.usbIdentifiedLabel)
+      : 'Select a port, then Detect board type (reads the chip with avrdude/esptool).';
     body.innerHTML =
-      '<div class="form-group"><label>Port</label><select id="addUsbPort"><option value="">' +
-      (choices.length ? 'Select port…' : 'No Arduino found') + '</option>' +
-      ports + '</select></div>' +
+      '<div class="form-group"><label>Port</label>' +
+      '<div class="nodes-inline-actions nodes-flash-port-row">' +
+      '<select id="addUsbPort"><option value="">' +
+      (choices.length ? 'Select port…' : 'No USB serial ports found') + '</option>' +
+      ports + '</select>' +
+      '<button type="button" class="btn btn-secondary" id="btnAddUsbDetect">Detect board type</button>' +
+      '</div>' +
+      '<p class="wifi-hint" id="addUsbDetectStatus">' + escapeHtml(detectStatus) + '</p></div>' +
+      '<div class="form-group"><label>Board type</label><select id="addUsbType">' +
+      typeOpts + '</select></div>' +
       '<div class="form-group"><label>Prefix (A–ZZ)</label>' +
       '<input type="text" id="addUsbPrefix" maxlength="2" value="' + escapeHtml(prefix) +
       '" style="text-transform:uppercase;"></div>' +
       clearRow +
       zipRow +
+      '<p class="wifi-hint nodes-flash-warn" id="addUsbWarn">' +
+      'Flashing erases whatever is on this port. CH340 / FTDI adapters look the same for ' +
+      'nodes and some command stations — pick the correct port yourself.</p>' +
       '<p class="wifi-hint" id="addUsbHint"></p>';
     const persistUsb = () => {
       const port = document.getElementById('addUsbPort')?.value;
-      const type = flashPortChoices().find((c) => c.value === port)?.boardType
+      const type = document.getElementById('addUsbType')?.value
         || nodesUi.addDraft?.usbBoardType
         || '';
       nodesUi.addDraft = Object.assign({}, nodesUi.addDraft, {
@@ -3458,10 +3472,24 @@ function renderNodesAddDetailsBody() {
           ? false
           : !!document.getElementById('addUsbClearConfig')?.checked
       });
+      const detectBtn = document.getElementById('btnAddUsbDetect');
+      if (detectBtn) detectBtn.disabled = !port;
       updateAddUsbHint();
     };
     document.getElementById('addUsbPrefix')?.addEventListener('input', persistUsb);
     document.getElementById('addUsbPort')?.addEventListener('change', () => {
+      nodesUi.addDraft = Object.assign({}, nodesUi.addDraft, {
+        usbIdentifiedLabel: '',
+        usbBoardType: ''
+      });
+      const typeSel = document.getElementById('addUsbType');
+      if (typeSel) typeSel.value = '';
+      const status = document.getElementById('addUsbDetectStatus');
+      if (status) status.textContent = 'Select a port, then Detect board type (reads the chip with avrdude/esptool).';
+      persistUsb();
+      renderNodesAddDetailsBody();
+    });
+    document.getElementById('addUsbType')?.addEventListener('change', () => {
       const prevType = nodesUi.addDraft?.usbBoardType || '';
       persistUsb();
       if ((nodesUi.addDraft?.usbBoardType || '') !== prevType) {
@@ -3469,6 +3497,7 @@ function renderNodesAddDetailsBody() {
       }
     });
     document.getElementById('addUsbClearConfig')?.addEventListener('change', persistUsb);
+    document.getElementById('btnAddUsbDetect')?.addEventListener('click', () => runAddUsbDetect());
     document.getElementById('btnAddUsbZip')?.addEventListener('click', () => {
       const file = document.getElementById('addUsbZip')?.files?.[0];
       const statusEl = document.getElementById('addUsbZipStatus');
@@ -3477,7 +3506,7 @@ function renderNodesAddDetailsBody() {
         showStatus(err.message, 'error');
       });
     });
-    updateAddUsbHint();
+    persistUsb();
   } else if (nodesUi.addMethod === 'virtual') {
     if (title) title.textContent = 'Virtual board';
     const type = draft.shimType || 'nano-avr';
@@ -3547,9 +3576,13 @@ function updateAddUsbHint() {
     return;
   }
   const type = selectedFlashBoardType() || nodesUi.addDraft?.usbBoardType || '';
+  if (!type || type === 'detect') {
+    el.textContent = 'Use Detect board type after choosing the port, or pick the type manually.';
+    return;
+  }
   if (type === 'nano-avr') {
     el.textContent = profileNeedsUpload('nano-avr')
-      ? 'Upload the zip from panelsDCC-Nodes first — Nano AVR has no built-in image.'
+      ? 'Upload the Nano AVR zip on this form before flashing.'
       : 'Uses your uploaded Nano AVR zip. Layout is baked into that image.';
     return;
   }
@@ -3561,7 +3594,56 @@ function updateAddUsbHint() {
     el.textContent = 'Uses the fixed image shipped with Connect. Pin layout and outputs stay on the board (dynamic config).';
     return;
   }
-  el.textContent = 'Connect checks the chip before writing. Mega and ESP32 use shipped images; only a plain Arduino Nano needs an uploaded zip.';
+  el.textContent = '';
+}
+
+async function identifyFlashPort(port) {
+  if (!port) return null;
+  const res = await fetch('/api/nodes/identify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ port })
+  });
+  return readJsonOrError(res);
+}
+
+async function runAddUsbDetect() {
+  const port = document.getElementById('addUsbPort')?.value;
+  const btn = document.getElementById('btnAddUsbDetect');
+  const status = document.getElementById('addUsbDetectStatus');
+  if (!port) {
+    showStatus('Select a port first', 'error');
+    return;
+  }
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Detecting…';
+  }
+  if (status) status.textContent = 'Reading chip on ' + port + '…';
+  try {
+    const id = await identifyFlashPort(port);
+    if (!id || !id.ok || !id.boardType) {
+      throw new Error((id && id.error) || 'Could not read the chip');
+    }
+    nodesUi.addDraft = Object.assign({}, nodesUi.addDraft, {
+      usbPort: port,
+      usbBoardType: id.boardType,
+      usbIdentifiedLabel: id.label || id.boardType,
+      usbPrefix: document.getElementById('addUsbPrefix')?.value,
+      clearConfig: id.boardType === 'nano-avr'
+        ? false
+        : !!document.getElementById('addUsbClearConfig')?.checked
+    });
+    showStatus('Detected ' + (id.label || id.boardType), 'success');
+    renderNodesAddDetailsBody();
+  } catch (err) {
+    if (status) status.textContent = 'Detect failed: ' + err.message;
+    showStatus('Detect failed: ' + err.message, 'error');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Detect board type';
+    }
+  }
 }
 
 function prepareNodesAddAction() {
@@ -3574,9 +3656,25 @@ function prepareNodesAddAction() {
     if (stages) stages.hidden = true;
   }
   if (nodesUi.addMethod === 'usb') {
-    if (title) title.textContent = 'Flash board';
-    if (runBtn) runBtn.textContent = 'Flash';
+    if (title) title.textContent = 'Confirm flash';
+    if (runBtn) runBtn.textContent = 'Flash this board';
     renderFlashStages({ stage: 'idle', state: 'idle' });
+    const port = nodesUi.addDraft?.usbPort || '';
+    const type = nodesUi.addDraft?.usbBoardType || 'detect';
+    const prefix = (nodesUi.addDraft?.usbPrefix || '').toUpperCase();
+    const profile = findProfile(type);
+    const typeLabel = type === 'detect'
+      ? (nodesUi.addDraft?.usbIdentifiedLabel || 'Auto-detect on write')
+      : (profile?.label || type);
+    if (logEl) {
+      logEl.textContent =
+        'Port: ' + port + '\n' +
+        'Board: ' + typeLabel + (type === 'detect' ? '' : ' (' + type + ')') + '\n' +
+        'Prefix: ' + prefix + '\n\n' +
+        'WARNING: This erases the device on that port.\n' +
+        'Connect will not stop you from flashing a command station or the wrong Arduino.\n' +
+        'Only continue if you are sure this is the node board.';
+    }
   } else if (nodesUi.addMethod === 'virtual') {
     if (title) title.textContent = 'Create virtual board';
     if (runBtn) runBtn.textContent = 'Create';
@@ -3616,13 +3714,22 @@ async function runNodesAddAction() {
       const port = document.getElementById('addUsbPort')?.value || nodesUi.addDraft?.usbPort;
       const prefix = (document.getElementById('addUsbPrefix')?.value
         || nodesUi.addDraft?.usbPrefix || '').trim().toUpperCase();
-      const boardType = selectedFlashBoardType() || 'detect';
+      const boardType = selectedFlashBoardType() || nodesUi.addDraft?.usbBoardType || 'detect';
       const clearConfig = boardType === 'nano-avr'
         ? false
         : !!(document.getElementById('addUsbClearConfig')?.checked
           ?? nodesUi.addDraft?.clearConfig);
       if (!port) throw new Error('Select a port');
       if (!/^[A-Z]{1,2}$/.test(prefix)) throw new Error('Prefix must be A–Z or AA–ZZ');
+      const typeLabel = nodesUi.addDraft?.usbIdentifiedLabel
+        || findProfile(boardType)?.label
+        || boardType;
+      if (!window.confirm(
+        'Flash ' + typeLabel + ' on ' + port + ' as prefix ' + prefix + '?\n\n' +
+        'This erases that device. Connect will not check whether it is a command station.'
+      )) {
+        return;
+      }
       setFlashBusy(true);
       const res = await fetch('/api/nodes/flash', {
         method: 'POST',
@@ -3710,6 +3817,15 @@ function validateAddDetails() {
     const prefix = (document.getElementById('addUsbPrefix')?.value || '').trim().toUpperCase();
     if (!/^[A-Z]{1,2}$/.test(prefix)) {
       showStatus('Prefix must be A–Z or AA–ZZ', 'error');
+      return false;
+    }
+    const type = selectedFlashBoardType();
+    if (!type || type === 'detect') {
+      showStatus('Detect the board type or choose it from the list', 'error');
+      return false;
+    }
+    if (type === 'nano-avr' && profileNeedsUpload('nano-avr')) {
+      showStatus('Upload the Nano AVR image zip on this form first', 'error');
       return false;
     }
   }
@@ -5232,6 +5348,18 @@ function bindNodesUi() {
   });
   document.getElementById('btnNodesAddNext')?.addEventListener('click', () => {
     if (!validateAddDetails()) return;
+    if (nodesUi.addMethod === 'usb') {
+      const port = document.getElementById('addUsbPort')?.value;
+      const type = selectedFlashBoardType();
+      nodesUi.addDraft = Object.assign({}, nodesUi.addDraft, {
+        usbPort: port,
+        usbPrefix: document.getElementById('addUsbPrefix')?.value,
+        usbBoardType: type,
+        clearConfig: type === 'nano-avr'
+          ? false
+          : !!document.getElementById('addUsbClearConfig')?.checked
+      });
+    }
     nodesUi.addStep = 'action';
     renderNodesAdd();
   });
@@ -5287,16 +5415,6 @@ function bindNodesUi() {
 
 function refreshSensorsPage() {
   loadSensorsToolchain();
-  document.getElementById('firmwareZipInput')?.addEventListener('change', (ev) => {
-    const file = ev.target.files && ev.target.files[0];
-    const statusEl = document.getElementById('firmwareZipStatus');
-    uploadFirmwareZip(file, statusEl).catch((err) => {
-      if (statusEl) statusEl.textContent = err.message;
-      showStatus(err.message, 'error');
-    }).finally(() => {
-      ev.target.value = '';
-    });
-  });
   loadSensorFlashPorts().then(() => loadSensorsBoards()).then(() => {
     if (currentPageFromHash() === 'nodes') syncNodesScreenFromHash();
   });

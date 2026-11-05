@@ -103,6 +103,106 @@ public final class NodeFlasher {
         return boardTypeId != null && DETECT.equalsIgnoreCase(boardTypeId.trim());
     }
 
+    /**
+     * Read the chip on {@code portName} without writing. Used so the UI can show
+     * Nano vs Mega vs ESP32 before the user confirms flash.
+     */
+    public synchronized JsonObject identifyPort(String portName) {
+        JsonObject out = new JsonObject();
+        out.addProperty("port", portName == null ? "" : NodeSupport.barePort(portName));
+        if (portName == null || portName.isBlank()) {
+            out.addProperty("ok", false);
+            out.addProperty("error", "port required");
+            return out;
+        }
+        State current = state.get();
+        if (current == State.PREPARING || current == State.UPLOADING) {
+            out.addProperty("ok", false);
+            out.addProperty("error", "Flash is already running");
+            return out;
+        }
+        String device = NodeSupport.devicePath(portName);
+        try {
+            if (toolExists(esptool)) {
+                Probe probe = identifyEsp(device);
+                if (probe != null && probe.chip != null) {
+                    ImageChoice choice = chooseImage(null, probe.chip, probe.flashSize, catalog.selectable());
+                    out.addProperty("ok", choice.image != null);
+                    out.addProperty("family", "esp");
+                    out.addProperty("chip", prettyChip(probe.chip));
+                    if (probe.flashSize != null) {
+                        out.addProperty("flashSize", probe.flashSize);
+                    }
+                    if (choice.image != null) {
+                        out.addProperty("boardType", choice.image.id);
+                        BoardProfile profile = BoardProfile.get(choice.image.id);
+                        out.addProperty("label", profile == null ? choice.image.id : profile.label);
+                    } else {
+                        out.addProperty("error", choice.message != null ? choice.message
+                                : "No image matches this Espressif chip");
+                    }
+                    if (probe.bootloader) {
+                        restartBoard(probe.port);
+                    }
+                    return out;
+                }
+            }
+            if (toolExists(avrdude)) {
+                String avrId = readAvrBoardQuiet(device);
+                if (avrId != null) {
+                    out.addProperty("ok", true);
+                    out.addProperty("family", "avr");
+                    out.addProperty("boardType", avrId);
+                    BoardProfile profile = BoardProfile.get(avrId);
+                    out.addProperty("label", profile == null ? avrId : profile.label);
+                    FirmwareImageCatalog.Image image = catalog.select(avrId).orElse(null);
+                    out.addProperty("imagePresent", image != null && image.filesPresent());
+                    if (BoardProfile.NANO_AVR.equals(avrId) && (image == null || !image.filesPresent())) {
+                        out.addProperty("needsUpload", true);
+                    }
+                    return out;
+                }
+            }
+            out.addProperty("ok", false);
+            out.addProperty("error", "Could not read a chip on this port");
+            return out;
+        } catch (Exception e) {
+            out.addProperty("ok", false);
+            out.addProperty("error", e.getMessage() != null ? e.getMessage() : "identify failed");
+            return out;
+        }
+    }
+
+    /** Like {@link #readAvrBoard} but does not mark the flasher failed. */
+    private String readAvrBoardQuiet(String devicePath) throws IOException, InterruptedException {
+        String[][] attempts = {
+                {"arduino", "atmega328p", "115200"},
+                {"arduino", "atmega328p", "57600"},
+                {"wiring", "atmega2560", "115200"}
+        };
+        for (String[] attempt : attempts) {
+            List<String> cmd = new ArrayList<>();
+            cmd.add(avrdude);
+            cmd.add("-c");
+            cmd.add(attempt[0]);
+            cmd.add("-p");
+            cmd.add(attempt[1]);
+            cmd.add("-P");
+            cmd.add(devicePath);
+            cmd.add("-b");
+            cmd.add(attempt[2]);
+            cmd.add("-n");
+            StringBuilder captured = new StringBuilder();
+            runner.run(cmd, line -> captured.append(line).append('\n'));
+            String signature = parseDeviceSignature(captured.toString());
+            if (signature == null) {
+                continue;
+            }
+            return boardForSignature(signature);
+        }
+        return null;
+    }
+
     /** Board chosen for the flash in progress, including one picked by reading the chip. */
     public String currentBoardType() {
         return boardType;
