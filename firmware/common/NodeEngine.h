@@ -105,7 +105,8 @@ enum LcPhase : uint8_t {
   LC_BARRIERS_CLOSING,
   LC_CLOSED,
   LC_BARRIERS_OPENING,
-  LC_CLEARING
+  LC_CLEARING,
+  LC_MANUAL
 };
 
 /* Immutable pin description. A baked Nano image stores these in program space. */
@@ -164,9 +165,12 @@ struct NodeOutputConfig {
   int warningMs;
   int wigwagOnMs;
   int wigwagOffMs;
-  int barrierTravelMs;
-  int barrierOpenDeg;
-  int barrierClosedDeg;
+  int barrier1TravelMs;
+  int barrier1OpenDeg;
+  int barrier1ClosedDeg;
+  int barrier2TravelMs;
+  int barrier2OpenDeg;
+  int barrier2ClosedDeg;
   int flashMs;
 };
 
@@ -177,15 +181,20 @@ struct NodeOutputRuntime {
   bool phaseHigh;
   unsigned long nextToggleMs;
   unsigned long pulseUntilMs;
-  int currentDeg;
+  int currentDeg;          // servo / barrier 1
   int targetDeg;
+  int barrier2CurrentDeg;  // barrier 2 (level crossing)
+  int barrier2TargetDeg;
   int currentBright;
   int targetBright;
   unsigned long fadeStartMs;
   int fadeFromBright;
+  int barrier2FadeFrom;
+  unsigned long barrier2FadeStartMs;
   LcPhase lcPhase;
   unsigned long phaseStartedMs;
   unsigned long phaseUntilMs;
+  int8_t lcManualWhich; // -1 none, 0 barrier1, 1 barrier2
   bool wigwagLeftOn;
   uint8_t signalOnMask;
   uint8_t signalFlashMask;

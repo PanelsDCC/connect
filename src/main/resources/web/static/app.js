@@ -2067,6 +2067,21 @@ function collectSignalPinNames() {
   return names;
 }
 
+/** Legacy shared barrier keys → per-barrier (mutates params). */
+function expandLevelCrossingParamsInPlace(params) {
+  if (!params || typeof params !== 'object') return params;
+  const travel = params.barrierTravelMs;
+  const open = params.barrierOpen_deg;
+  const closed = params.barrierClosed_deg;
+  if (params.barrier1TravelMs == null && travel != null) params.barrier1TravelMs = travel;
+  if (params.barrier2TravelMs == null && travel != null) params.barrier2TravelMs = travel;
+  if (params.barrier1Open_deg == null && open != null) params.barrier1Open_deg = open;
+  if (params.barrier2Open_deg == null && open != null) params.barrier2Open_deg = open;
+  if (params.barrier1Closed_deg == null && closed != null) params.barrier1Closed_deg = closed;
+  if (params.barrier2Closed_deg == null && closed != null) params.barrier2Closed_deg = closed;
+  return params;
+}
+
 function usedVirtualLabelsOnBoard(board, excludeOutputIx) {
   const used = new Set();
   (board?.outputs || []).forEach((o, ix) => {
@@ -2170,6 +2185,7 @@ function renderNodeOutputParams(existingParams) {
     renderSignalPinNameFields(host, pins, existingNames);
   }
   if (type === 'level_crossing') {
+    expandLevelCrossingParamsInPlace(defaults);
     renderLevelCrossingFeedbackField(host, defaults);
   }
   fields.forEach((f) => {
@@ -4718,6 +4734,10 @@ async function saveNodeOutputCfg() {
     if (params.flashMs == null) params.flashMs = 500;
   }
   if (type === 'level_crossing') {
+    expandLevelCrossingParamsInPlace(params);
+    delete params.barrierTravelMs;
+    delete params.barrierOpen_deg;
+    delete params.barrierClosed_deg;
     let v = normalizeVirtualLabelUi(params.feedbackVirtual);
     if (!v) v = nextFreeVirtualLabel(board, nodesUi.editingOutputIx);
     if (!v) {

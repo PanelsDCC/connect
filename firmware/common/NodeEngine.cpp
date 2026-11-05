@@ -601,7 +601,11 @@ static void snapshotServoAngles() {
       int g = outGpioAt(i, j);
       if (g < 0) continue;
       gSnapGpio[gSnapCount] = g;
-      gSnapDeg[gSnapCount] = gOutRt[i].currentDeg;
+      if (type == OUT_LEVEL_CROSSING && j >= 4) {
+        gSnapDeg[gSnapCount] = gOutRt[i].barrier2CurrentDeg;
+      } else {
+        gSnapDeg[gSnapCount] = gOutRt[i].currentDeg;
+      }
       gSnapCount++;
     }
   }
@@ -624,6 +628,34 @@ static void holdServoOutput(uint8_t oi, int deg) {
   r->fadeFromBright = deg;
   r->fadeStartMs = millis();
   r->active = false;
+}
+
+/** Move toward deg at configured travel speed (same path as DCC servo triggers). */
+static void startServoTravel(uint8_t oi, int deg) {
+  if (deg < 0) deg = 0;
+  if (deg > 180) deg = 180;
+  NodeOutputRuntime* r = &gOutRt[oi];
+  r->targetDeg = deg;
+  r->fadeFromBright = r->currentDeg;
+  r->fadeStartMs = millis();
+  r->active = true;
+}
+
+static void tickServoTravel(uint8_t oi, unsigned long now, int travelMs) {
+  NodeOutputRuntime* r = &gOutRt[oi];
+  int dur = travelMs;
+  if (dur < 1) dur = 1;
+  int from = r->fadeFromBright;
+  int delta = abs(r->targetDeg - from);
+  int need = (int)((long)dur * delta / 180L);
+  if (need < 1) need = 1;
+  float t = (float)(now - r->fadeStartMs) / (float)need;
+  if (t >= 1.0f) {
+    r->currentDeg = r->targetDeg;
+    r->active = false;
+  } else if (t > 0) {
+    r->currentDeg = (int)lround(from + (r->targetDeg - from) * t);
+  }
 }
 
 static void clearRuntime() {
@@ -700,16 +732,19 @@ static void finishOutput(uint8_t oi) {
     holdServoOutput(oi, deg);
     if (r->servoIx[0] >= 0) writeServoDeg(r->servoIx[0], deg);
   } else if (outTypeAt(oi) == OUT_LEVEL_CROSSING) {
-    int openDeg = OI(oi, barrierOpenDeg);
-    int g = outGpioAt(oi, 3);
-    int snap = snappedDegForGpio(g);
-    int deg = snap >= 0 ? snap : openDeg;
     r->lcPhase = LC_IDLE_OPEN;
-    holdServoOutput(oi, deg);
-    uint8_t n = outPinCountAt(oi);
-    for (uint8_t i = 3; i < n && i < 5; i++) {
-      if (r->servoIx[i] >= 0) writeServoDeg(r->servoIx[i], deg);
-    }
+    r->lcManualWhich = -1;
+    int snap1 = snappedDegForGpio(outGpioAt(oi, 3));
+    int snap2 = snappedDegForGpio(outGpioAt(oi, 4));
+    r->currentDeg = snap1 >= 0 ? snap1 : OI(oi, barrier1OpenDeg);
+    r->targetDeg = r->currentDeg;
+    r->fadeFromBright = r->currentDeg;
+    r->barrier2CurrentDeg = snap2 >= 0 ? snap2 : OI(oi, barrier2OpenDeg);
+    r->barrier2TargetDeg = r->barrier2CurrentDeg;
+    r->barrier2FadeFrom = r->barrier2CurrentDeg;
+    r->active = false;
+    if (r->servoIx[3] >= 0) writeServoDeg(r->servoIx[3], r->currentDeg);
+    if (outPinCountAt(oi) > 4 && r->servoIx[4] >= 0) writeServoDeg(r->servoIx[4], r->barrier2CurrentDeg);
   }
 }
 
@@ -761,9 +796,12 @@ static void parseParams(NodeOutputConfig* o, const char* paramsObj) {
   o->warningMs = 3000;
   o->wigwagOnMs = 400;
   o->wigwagOffMs = 400;
-  o->barrierTravelMs = 2500;
-  o->barrierOpenDeg = 90;
-  o->barrierClosedDeg = 0;
+  o->barrier1TravelMs = 2500;
+  o->barrier1OpenDeg = 90;
+  o->barrier1ClosedDeg = 0;
+  o->barrier2TravelMs = 2500;
+  o->barrier2OpenDeg = 90;
+  o->barrier2ClosedDeg = 0;
   o->flashMs = 500;
   if (!paramsObj) return;
   const char* v;
@@ -776,9 +814,25 @@ static void parseParams(NodeOutputConfig* o, const char* paramsObj) {
   if ((v = findKey(paramsObj, "warningMs")) && parseIntVal(v, &n)) o->warningMs = n;
   if ((v = findKey(paramsObj, "wigwagOnMs")) && parseIntVal(v, &n)) o->wigwagOnMs = n;
   if ((v = findKey(paramsObj, "wigwagOffMs")) && parseIntVal(v, &n)) o->wigwagOffMs = n;
-  if ((v = findKey(paramsObj, "barrierTravelMs")) && parseIntVal(v, &n)) o->barrierTravelMs = n;
-  if ((v = findKey(paramsObj, "barrierOpen_deg")) && parseIntVal(v, &n)) o->barrierOpenDeg = n;
-  if ((v = findKey(paramsObj, "barrierClosed_deg")) && parseIntVal(v, &n)) o->barrierClosedDeg = n;
+  // Legacy shared keys apply to both barriers; per-barrier keys override.
+  if ((v = findKey(paramsObj, "barrierTravelMs")) && parseIntVal(v, &n)) {
+    o->barrier1TravelMs = n;
+    o->barrier2TravelMs = n;
+  }
+  if ((v = findKey(paramsObj, "barrierOpen_deg")) && parseIntVal(v, &n)) {
+    o->barrier1OpenDeg = n;
+    o->barrier2OpenDeg = n;
+  }
+  if ((v = findKey(paramsObj, "barrierClosed_deg")) && parseIntVal(v, &n)) {
+    o->barrier1ClosedDeg = n;
+    o->barrier2ClosedDeg = n;
+  }
+  if ((v = findKey(paramsObj, "barrier1TravelMs")) && parseIntVal(v, &n)) o->barrier1TravelMs = n;
+  if ((v = findKey(paramsObj, "barrier1Open_deg")) && parseIntVal(v, &n)) o->barrier1OpenDeg = n;
+  if ((v = findKey(paramsObj, "barrier1Closed_deg")) && parseIntVal(v, &n)) o->barrier1ClosedDeg = n;
+  if ((v = findKey(paramsObj, "barrier2TravelMs")) && parseIntVal(v, &n)) o->barrier2TravelMs = n;
+  if ((v = findKey(paramsObj, "barrier2Open_deg")) && parseIntVal(v, &n)) o->barrier2OpenDeg = n;
+  if ((v = findKey(paramsObj, "barrier2Closed_deg")) && parseIntVal(v, &n)) o->barrier2ClosedDeg = n;
   if ((v = findKey(paramsObj, "flashMs")) && parseIntVal(v, &n)) o->flashMs = n;
 }
 
@@ -947,13 +1001,19 @@ static void parseOutputsArray(const char* arr) {
         holdServoOutput(gOutputCount, deg);
         if (rt->servoIx[0] >= 0) writeServoDeg(rt->servoIx[0], deg);
       } else if (o->type == OUT_LEVEL_CROSSING) {
-        int snap = o->pinCount > 3 ? snappedDegForGpio(o->gpio[3]) : -1;
-        int deg = snap >= 0 ? snap : o->barrierOpenDeg;
+        int snap1 = o->pinCount > 3 ? snappedDegForGpio(o->gpio[3]) : -1;
+        int snap2 = o->pinCount > 4 ? snappedDegForGpio(o->gpio[4]) : -1;
         rt->lcPhase = LC_IDLE_OPEN;
-        holdServoOutput(gOutputCount, deg);
-        for (uint8_t i = 3; i < o->pinCount && i < 5; i++) {
-          if (rt->servoIx[i] >= 0) writeServoDeg(rt->servoIx[i], deg);
-        }
+        rt->lcManualWhich = -1;
+        rt->currentDeg = snap1 >= 0 ? snap1 : o->barrier1OpenDeg;
+        rt->targetDeg = rt->currentDeg;
+        rt->fadeFromBright = rt->currentDeg;
+        rt->barrier2CurrentDeg = snap2 >= 0 ? snap2 : o->barrier2OpenDeg;
+        rt->barrier2TargetDeg = rt->barrier2CurrentDeg;
+        rt->barrier2FadeFrom = rt->barrier2CurrentDeg;
+        rt->active = false;
+        if (rt->servoIx[3] >= 0) writeServoDeg(rt->servoIx[3], rt->currentDeg);
+        if (o->pinCount > 4 && rt->servoIx[4] >= 0) writeServoDeg(rt->servoIx[4], rt->barrier2CurrentDeg);
       }
       gOutputCount++;
     }
@@ -1175,9 +1235,12 @@ static void printBakedParams(Stream* s, uint8_t oi, NodeOutType type) {
     printIntField(s, &first, F("warningMs"), OI(oi, warningMs));
     printIntField(s, &first, F("wigwagOnMs"), OI(oi, wigwagOnMs));
     printIntField(s, &first, F("wigwagOffMs"), OI(oi, wigwagOffMs));
-    printIntField(s, &first, F("barrierTravelMs"), OI(oi, barrierTravelMs));
-    printIntField(s, &first, F("barrierOpen_deg"), OI(oi, barrierOpenDeg));
-    printIntField(s, &first, F("barrierClosed_deg"), OI(oi, barrierClosedDeg));
+    printIntField(s, &first, F("barrier1TravelMs"), OI(oi, barrier1TravelMs));
+    printIntField(s, &first, F("barrier1Open_deg"), OI(oi, barrier1OpenDeg));
+    printIntField(s, &first, F("barrier1Closed_deg"), OI(oi, barrier1ClosedDeg));
+    printIntField(s, &first, F("barrier2TravelMs"), OI(oi, barrier2TravelMs));
+    printIntField(s, &first, F("barrier2Open_deg"), OI(oi, barrier2OpenDeg));
+    printIntField(s, &first, F("barrier2Closed_deg"), OI(oi, barrier2ClosedDeg));
     if (!first) s->print(',');
     first = false;
     s->print(F("\"feedbackVirtual\":"));
@@ -1460,12 +1523,71 @@ static void setOutDigital(uint8_t oi, uint8_t pinIx, bool on) {
   writeDigital(outGpioAt(oi, pinIx), on);
 }
 
-static void lcSetBarriers(uint8_t oi, int deg) {
+static int lcBarrierTravel(uint8_t oi, uint8_t which) {
+  int t = which ? OI(oi, barrier2TravelMs) : OI(oi, barrier1TravelMs);
+  return t < 1 ? 1 : t;
+}
+
+static int lcBarrierOpen(uint8_t oi, uint8_t which) {
+  return which ? OI(oi, barrier2OpenDeg) : OI(oi, barrier1OpenDeg);
+}
+
+static int lcBarrierClosed(uint8_t oi, uint8_t which) {
+  return which ? OI(oi, barrier2ClosedDeg) : OI(oi, barrier1ClosedDeg);
+}
+
+static int lcMaxBarrierTravel(uint8_t oi) {
+  int a = lcBarrierTravel(oi, 0);
+  int b = lcBarrierTravel(oi, 1);
+  return a > b ? a : b;
+}
+
+static void lcWriteBarrier(uint8_t oi, uint8_t which, int deg) {
+  if (deg < 0) deg = 0;
+  if (deg > 180) deg = 180;
   NodeOutputRuntime* r = &gOutRt[oi];
-  r->currentDeg = deg;
-  uint8_t n = outPinCountAt(oi);
-  for (uint8_t i = 3; i < n && i < 5; i++) {
-    if (r->servoIx[i] >= 0) writeServoDeg(r->servoIx[i], deg);
+  uint8_t pinIx = (uint8_t)(3 + which);
+  if (which == 0) r->currentDeg = deg;
+  else r->barrier2CurrentDeg = deg;
+  if (pinIx < outPinCountAt(oi) && r->servoIx[pinIx] >= 0) {
+    writeServoDeg(r->servoIx[pinIx], deg);
+  }
+}
+
+static void lcHoldBarriersOpen(uint8_t oi) {
+  lcWriteBarrier(oi, 0, lcBarrierOpen(oi, 0));
+  lcWriteBarrier(oi, 1, lcBarrierOpen(oi, 1));
+}
+
+static void lcHoldBarriersClosed(uint8_t oi) {
+  lcWriteBarrier(oi, 0, lcBarrierClosed(oi, 0));
+  lcWriteBarrier(oi, 1, lcBarrierClosed(oi, 1));
+}
+
+static void startBarrier2Travel(uint8_t oi, int deg) {
+  if (deg < 0) deg = 0;
+  if (deg > 180) deg = 180;
+  NodeOutputRuntime* r = &gOutRt[oi];
+  r->barrier2TargetDeg = deg;
+  r->barrier2FadeFrom = r->barrier2CurrentDeg;
+  r->barrier2FadeStartMs = millis();
+  r->active = true;
+}
+
+static void tickBarrier2Travel(uint8_t oi, unsigned long now, int travelMs) {
+  NodeOutputRuntime* r = &gOutRt[oi];
+  int dur = travelMs;
+  if (dur < 1) dur = 1;
+  int from = r->barrier2FadeFrom;
+  int delta = abs(r->barrier2TargetDeg - from);
+  int need = (int)((long)dur * delta / 180L);
+  if (need < 1) need = 1;
+  float t = (float)(now - r->barrier2FadeStartMs) / (float)need;
+  if (t >= 1.0f) {
+    r->barrier2CurrentDeg = r->barrier2TargetDeg;
+    r->active = false;
+  } else if (t > 0) {
+    r->barrier2CurrentDeg = (int)lround(from + (r->barrier2TargetDeg - from) * t);
   }
 }
 
@@ -1496,25 +1618,32 @@ static void lcApplyLights(uint8_t oi, unsigned long now) {
 
 static void lcUpdateBarrierMotion(uint8_t oi, unsigned long now) {
   NodeOutputRuntime* r = &gOutRt[oi];
-  int open = OI(oi, barrierOpenDeg);
-  int closed = OI(oi, barrierClosedDeg);
-  int travel = OI(oi, barrierTravelMs);
-  if (travel < 1) travel = 1;
-  if (r->lcPhase == LC_BARRIERS_CLOSING) {
-    float t = (float)(now - r->phaseStartedMs) / (float)travel;
-    if (t < 0) t = 0;
-    if (t > 1) t = 1;
-    lcSetBarriers(oi, (int)lround(open + (closed - open) * t));
-  } else if (r->lcPhase == LC_BARRIERS_OPENING) {
-    float t = (float)(now - r->phaseStartedMs) / (float)travel;
-    if (t < 0) t = 0;
-    if (t > 1) t = 1;
-    lcSetBarriers(oi, (int)lround(closed + (open - closed) * t));
+  if (r->lcPhase == LC_BARRIERS_CLOSING || r->lcPhase == LC_BARRIERS_OPENING) {
+    for (uint8_t which = 0; which < 2; which++) {
+      int open = lcBarrierOpen(oi, which);
+      int closed = lcBarrierClosed(oi, which);
+      int travel = lcBarrierTravel(oi, which);
+      float t = (float)(now - r->phaseStartedMs) / (float)travel;
+      if (t < 0) t = 0;
+      if (t > 1) t = 1;
+      int deg = (r->lcPhase == LC_BARRIERS_CLOSING)
+          ? (int)lround(open + (closed - open) * t)
+          : (int)lround(closed + (open - closed) * t);
+      lcWriteBarrier(oi, which, deg);
+    }
+  } else if (r->lcPhase == LC_MANUAL) {
+    if (r->lcManualWhich == 0) {
+      tickServoTravel(oi, now, lcBarrierTravel(oi, 0));
+      lcWriteBarrier(oi, 0, r->currentDeg);
+    } else if (r->lcManualWhich == 1) {
+      tickBarrier2Travel(oi, now, lcBarrierTravel(oi, 1));
+      lcWriteBarrier(oi, 1, r->barrier2CurrentDeg);
+    }
   } else if (r->lcPhase == LC_CLOSED) {
-    lcSetBarriers(oi, closed);
+    lcHoldBarriersClosed(oi);
   } else if (r->lcPhase == LC_IDLE_OPEN || r->lcPhase == LC_WARNING || r->lcPhase == LC_WIGWAG
       || r->lcPhase == LC_CLEARING) {
-    lcSetBarriers(oi, open);
+    lcHoldBarriersOpen(oi);
   }
 }
 
@@ -1529,17 +1658,18 @@ static void lcAdvance(uint8_t oi, unsigned long now) {
     r->phaseUntilMs = now + (unsigned long)settle;
   } else if (r->lcPhase == LC_WIGWAG) {
     r->lcPhase = LC_BARRIERS_CLOSING;
+    r->lcManualWhich = -1;
     r->phaseStartedMs = now;
-    r->phaseUntilMs = now + (unsigned long)OI(oi, barrierTravelMs);
+    r->phaseUntilMs = now + (unsigned long)lcMaxBarrierTravel(oi);
   } else if (r->lcPhase == LC_BARRIERS_CLOSING) {
     r->lcPhase = LC_CLOSED;
     r->phaseUntilMs = 0;
-    lcSetBarriers(oi, OI(oi, barrierClosedDeg));
+    lcHoldBarriersClosed(oi);
   } else if (r->lcPhase == LC_BARRIERS_OPENING) {
     r->lcPhase = LC_CLEARING;
     r->phaseStartedMs = now;
     r->phaseUntilMs = now + LC_CLEARING_MS;
-    lcSetBarriers(oi, OI(oi, barrierOpenDeg));
+    lcHoldBarriersOpen(oi);
   } else if (r->lcPhase == LC_CLEARING) {
     r->lcPhase = LC_IDLE_OPEN;
     r->phaseUntilMs = 0;
@@ -1554,23 +1684,25 @@ static void lcStartClose(uint8_t oi, unsigned long now) {
   NodeOutputRuntime* r = &gOutRt[oi];
   r->active = true;
   r->lcPhase = LC_WARNING;
+  r->lcManualWhich = -1;
   r->phaseStartedMs = now;
   r->phaseUntilMs = now + (unsigned long)OI(oi, warningMs);
   r->wigwagLeftOn = true;
   r->nextToggleMs = 0;
-  lcSetBarriers(oi, OI(oi, barrierOpenDeg));
+  lcHoldBarriersOpen(oi);
 }
 
 static void lcStartOpen(uint8_t oi, unsigned long now) {
   NodeOutputRuntime* r = &gOutRt[oi];
   if (r->lcPhase == LC_IDLE_OPEN) {
-    lcSetBarriers(oi, OI(oi, barrierOpenDeg));
+    lcHoldBarriersOpen(oi);
     return;
   }
   r->active = true;
   r->lcPhase = LC_BARRIERS_OPENING;
+  r->lcManualWhich = -1;
   r->phaseStartedMs = now;
-  r->phaseUntilMs = now + (unsigned long)OI(oi, barrierTravelMs);
+  r->phaseUntilMs = now + (unsigned long)lcMaxBarrierTravel(oi);
   if (r->nextToggleMs == 0) {
     r->wigwagLeftOn = true;
     r->nextToggleMs = now + (unsigned long)OI(oi, wigwagOnMs);
@@ -1709,19 +1841,7 @@ static void tickOutputs() {
         break;
       }
       case OUT_SERVO: {
-        int dur = OI(i, travelMs);
-        if (dur < 1) dur = 1;
-        int from = r->fadeFromBright;
-        int delta = abs(r->targetDeg - from);
-        int need = (int)((long)dur * delta / 180L);
-        if (need < 1) need = 1;
-        float t = (float)(now - r->fadeStartMs) / (float)need;
-        if (t >= 1.0f) {
-          r->currentDeg = r->targetDeg;
-          r->active = false;
-        } else if (t > 0) {
-          r->currentDeg = (int)lround(from + (r->targetDeg - from) * t);
-        }
+        tickServoTravel(i, now, OI(i, travelMs));
         if (r->servoIx[0] >= 0) writeServoDeg(r->servoIx[0], r->currentDeg);
         break;
       }
@@ -1832,16 +1952,31 @@ static void handleTest(const char* rest) {
     int gpio = findGpioBySilk(p);
     if (gpio < 0) return;
     int8_t ix = -1;
+    bool moved = false;
     for (uint8_t i = 0; i < gOutputCount; i++) {
       uint8_t n = outPinCountAt(i);
       for (uint8_t j = 0; j < n; j++) {
-        if (outGpioAt(i, j) == gpio && gOutRt[i].servoIx[j] >= 0) {
-          ix = gOutRt[i].servoIx[j];
-          // Keep runtime angle in sync so tickOutputs does not yank the horn back.
+        if (outGpioAt(i, j) != gpio || gOutRt[i].servoIx[j] < 0) continue;
+        ix = gOutRt[i].servoIx[j];
+        NodeOutType type = outTypeAt(i);
+        if (type == OUT_SERVO) {
+          // Pace at travelMs like DCC triggers — not an instant jump.
+          startServoTravel(i, deg);
+          moved = true;
+        } else if (type == OUT_LEVEL_CROSSING) {
+          uint8_t which = (j >= 4) ? 1 : 0;
+          gOutRt[i].lcPhase = LC_MANUAL;
+          gOutRt[i].lcManualWhich = (int8_t)which;
+          gOutRt[i].phaseUntilMs = 0;
+          if (which == 0) startServoTravel(i, deg);
+          else startBarrier2Travel(i, deg);
+          moved = true;
+        } else {
           holdServoOutput(i, deg);
         }
       }
     }
+    if (moved) return;
     if (ix < 0) {
       pinMode(gpio, OUTPUT);
       ix = allocServo(gpio);

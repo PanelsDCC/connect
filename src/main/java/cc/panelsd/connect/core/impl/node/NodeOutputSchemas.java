@@ -185,9 +185,12 @@ public final class NodeOutputSchemas {
         params.addProperty("warningMs", 3000);
         params.addProperty("wigwagOnMs", 400);
         params.addProperty("wigwagOffMs", 400);
-        params.addProperty("barrierTravelMs", 2500);
-        params.addProperty("barrierOpen_deg", 90);
-        params.addProperty("barrierClosed_deg", 0);
+        params.addProperty("barrier1TravelMs", 2500);
+        params.addProperty("barrier1Open_deg", 90);
+        params.addProperty("barrier1Closed_deg", 0);
+        params.addProperty("barrier2TravelMs", 2500);
+        params.addProperty("barrier2Open_deg", 90);
+        params.addProperty("barrier2Closed_deg", 0);
         params.addProperty("feedbackVirtual", "");
         params.addProperty("feedbackActiveState", 1);
         JsonArray fixed = new JsonArray();
@@ -206,9 +209,12 @@ public final class NodeOutputSchemas {
                         param("warningMs", "integer", "Warning light time (ms)", 3000),
                         param("wigwagOnMs", "integer", "Wig-wag on (ms)", 400),
                         param("wigwagOffMs", "integer", "Wig-wag off (ms)", 400),
-                        param("barrierTravelMs", "integer", "Barrier travel (ms)", 2500),
-                        paramTestable("barrierOpen_deg", "integer", "Barrier open (°)", 90),
-                        paramTestable("barrierClosed_deg", "integer", "Barrier closed (°)", 0),
+                        param("barrier1TravelMs", "integer", "Barrier 1 travel (ms)", 2500),
+                        paramTestable("barrier1Open_deg", "integer", "Barrier 1 open (°)", 90),
+                        paramTestable("barrier1Closed_deg", "integer", "Barrier 1 closed (°)", 0),
+                        param("barrier2TravelMs", "integer", "Barrier 2 travel (ms)", 2500),
+                        paramTestable("barrier2Open_deg", "integer", "Barrier 2 open (°)", 90),
+                        paramTestable("barrier2Closed_deg", "integer", "Barrier 2 closed (°)", 0),
                         param("feedbackVirtual", "string", "Virtual feedback (V1–V12)", ""),
                         param("feedbackActiveState", "integer", "Feedback active state (1=high when closed)", 1)),
                 params,

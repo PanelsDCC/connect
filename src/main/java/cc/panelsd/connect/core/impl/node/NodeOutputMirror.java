@@ -294,11 +294,14 @@ public final class NodeOutputMirror {
         long nextWigwagToggleMs = 0L;
         boolean wigwagLeftOn = true;
         long pulseUntilMs = 0L;
-        int barrierDeg = 90;
+        int barrier1Deg = 90;
+        int barrier2Deg = 90;
         /** Servo / manual barrier travel (mirrors firmware travelMs pacing). */
         Integer travelFromDeg = null;
         Integer travelTargetDeg = null;
         long travelStartMs = 0L;
+        /** Level-crossing manual move: 0 = barrier1, 1 = barrier2, -1 = none. */
+        int manualBarrierWhich = -1;
 
         OutputMirror(int ix, String type, String name, JsonObject params) {
             this.ix = ix;
@@ -404,7 +407,8 @@ public final class NodeOutputMirror {
                 }
             }
             if (NodeOutputSchemas.LEVEL_CROSSING.equals(m.type)) {
-                m.barrierDeg = m.paramInt("barrierOpen_deg", 90);
+                m.barrier1Deg = m.barrierOpen(0);
+                m.barrier2Deg = m.barrierOpen(1);
             }
             if (NodeOutputSchemas.DIGITAL_SIGNAL.equals(m.type) && m.pinRoles.isEmpty()) {
                 for (int i = 0; i < m.pins.size(); i++) {
@@ -481,12 +485,14 @@ public final class NodeOutputMirror {
                 return;
             }
             String role = pinIx < pinRoles.size() ? pinRoles.get(pinIx) : null;
-            boolean barrier = "barrier1".equals(role) || "barrier2".equals(role) || pinIx >= 3;
-            if (!barrier) {
+            int which = "barrier2".equals(role) || pinIx >= 4 ? 1
+                    : ("barrier1".equals(role) || pinIx == 3 ? 0 : -1);
+            if (which < 0) {
                 return;
             }
             long now = System.currentTimeMillis();
-            travelFromDeg = barrierDeg;
+            manualBarrierWhich = which;
+            travelFromDeg = which == 0 ? barrier1Deg : barrier2Deg;
             travelTargetDeg = clampDeg(toDeg);
             travelStartMs = now;
             state = "manual";
@@ -568,7 +574,8 @@ public final class NodeOutputMirror {
             label = "Closing · warning";
             phaseStartedMs = now;
             phaseUntilMs = now + paramInt("warningMs", 3000);
-            barrierDeg = paramInt("barrierOpen_deg", 90);
+            manualBarrierWhich = -1;
+            holdBarriersOpen();
             wigwagLeftOn = true;
             nextWigwagToggleMs = 0L;
         }
@@ -580,15 +587,55 @@ public final class NodeOutputMirror {
                 phase = "open";
                 label = "Open";
                 phaseUntilMs = 0L;
-                barrierDeg = paramInt("barrierOpen_deg", 90);
+                manualBarrierWhich = -1;
+                holdBarriersOpen();
                 return;
             }
             state = "opening";
             phase = "barriers_opening";
             label = "Opening · barriers";
             phaseStartedMs = now;
-            phaseUntilMs = now + paramInt("barrierTravelMs", 2500);
+            phaseUntilMs = now + maxBarrierTravel();
+            manualBarrierWhich = -1;
             ensureWigwagRunning(now);
+        }
+
+        private void holdBarriersOpen() {
+            barrier1Deg = barrierOpen(0);
+            barrier2Deg = barrierOpen(1);
+        }
+
+        private void holdBarriersClosed() {
+            barrier1Deg = barrierClosed(0);
+            barrier2Deg = barrierClosed(1);
+        }
+
+        private int barrierTravel(int which) {
+            String key = which == 0 ? "barrier1TravelMs" : "barrier2TravelMs";
+            if (params != null && params.has(key)) {
+                return Math.max(1, paramInt(key, 2500));
+            }
+            return Math.max(1, paramInt("barrierTravelMs", 2500));
+        }
+
+        private int barrierOpen(int which) {
+            String key = which == 0 ? "barrier1Open_deg" : "barrier2Open_deg";
+            if (params != null && params.has(key)) {
+                return paramInt(key, 90);
+            }
+            return paramInt("barrierOpen_deg", 90);
+        }
+
+        private int barrierClosed(int which) {
+            String key = which == 0 ? "barrier1Closed_deg" : "barrier2Closed_deg";
+            if (params != null && params.has(key)) {
+                return paramInt(key, 0);
+            }
+            return paramInt("barrierClosed_deg", 0);
+        }
+
+        private int maxBarrierTravel() {
+            return Math.max(barrierTravel(0), barrierTravel(1));
         }
 
         private void ensureWigwagRunning(long now) {
@@ -653,25 +700,38 @@ public final class NodeOutputMirror {
         }
 
         private void updateBarrierDeg(long now) {
-            int open = paramInt("barrierOpen_deg", 90);
-            int closed = paramInt("barrierClosed_deg", 0);
-            int travel = Math.max(1, paramInt("barrierTravelMs", 2500));
-            if ("barriers_closing".equals(phase)) {
-                double t = Math.min(1.0, Math.max(0.0, (now - phaseStartedMs) / (double) travel));
-                barrierDeg = (int) Math.round(open + (closed - open) * t);
-            } else if ("barriers_opening".equals(phase)) {
-                double t = Math.min(1.0, Math.max(0.0, (now - phaseStartedMs) / (double) travel));
-                barrierDeg = (int) Math.round(closed + (open - closed) * t);
-            } else if ("manual".equals(phase) && travelTargetDeg != null && travelFromDeg != null) {
-                barrierDeg = interpolateTravel(now, travelFromDeg, travelTargetDeg, travel, travelStartMs);
-                if (barrierDeg == travelTargetDeg) {
+            if ("barriers_closing".equals(phase) || "barriers_opening".equals(phase)) {
+                for (int which = 0; which < 2; which++) {
+                    int open = barrierOpen(which);
+                    int closed = barrierClosed(which);
+                    int travel = barrierTravel(which);
+                    double t = Math.min(1.0, Math.max(0.0, (now - phaseStartedMs) / (double) travel));
+                    int deg = "barriers_closing".equals(phase)
+                            ? (int) Math.round(open + (closed - open) * t)
+                            : (int) Math.round(closed + (open - closed) * t);
+                    if (which == 0) {
+                        barrier1Deg = deg;
+                    } else {
+                        barrier2Deg = deg;
+                    }
+                }
+            } else if ("manual".equals(phase) && travelTargetDeg != null && travelFromDeg != null
+                    && manualBarrierWhich >= 0) {
+                int travel = barrierTravel(manualBarrierWhich);
+                int deg = interpolateTravel(now, travelFromDeg, travelTargetDeg, travel, travelStartMs);
+                if (manualBarrierWhich == 0) {
+                    barrier1Deg = deg;
+                } else {
+                    barrier2Deg = deg;
+                }
+                if (deg == travelTargetDeg) {
                     travelFromDeg = null;
                     travelTargetDeg = null;
                 }
             } else if (phaseEquals("closed")) {
-                barrierDeg = closed;
+                holdBarriersClosed();
             } else if (phaseEquals("open", "clearing", "warning", "wigwag")) {
-                barrierDeg = open;
+                holdBarriersOpen();
             }
         }
 
@@ -686,26 +746,26 @@ public final class NodeOutputMirror {
                 phase = "barriers_closing";
                 label = "Closing · barriers";
                 phaseStartedMs = now;
-                phaseUntilMs = now + paramInt("barrierTravelMs", 2500);
+                phaseUntilMs = now + maxBarrierTravel();
             } else if ("barriers_closing".equals(phase)) {
                 phase = "closed";
                 state = "closed";
                 label = "Closed";
                 phaseUntilMs = 0L;
-                barrierDeg = paramInt("barrierClosed_deg", 0);
+                holdBarriersClosed();
                 publishVirtualFeedback(true);
             } else if ("barriers_opening".equals(phase)) {
                 phase = "clearing";
                 label = "Opening · clearing";
                 phaseStartedMs = now;
                 phaseUntilMs = now + CLEARING_MS;
-                barrierDeg = paramInt("barrierOpen_deg", 90);
+                holdBarriersOpen();
             } else if ("clearing".equals(phase)) {
                 phase = "open";
                 state = "open";
                 label = "Open";
                 phaseUntilMs = 0L;
-                barrierDeg = paramInt("barrierOpen_deg", 90);
+                holdBarriersOpen();
                 publishVirtualFeedback(false);
             }
         }
@@ -803,7 +863,9 @@ public final class NodeOutputMirror {
                 o.addProperty("brightness", brightness);
             }
             if (NodeOutputSchemas.LEVEL_CROSSING.equals(type)) {
-                o.addProperty("barrierDeg", barrierDeg);
+                o.addProperty("barrierDeg", barrier1Deg);
+                o.addProperty("barrier1Deg", barrier1Deg);
+                o.addProperty("barrier2Deg", barrier2Deg);
             }
             if (NodeOutputSchemas.DIGITAL_SIGNAL.equals(type)) {
                 JsonArray onJson = new JsonArray();
@@ -893,10 +955,11 @@ public final class NodeOutputMirror {
                 return wwActive ? "wigwag_b" : "off";
             }
             if ("barrier1".equals(role) || "barrier2".equals(role)) {
+                int d = "barrier2".equals(role) ? barrier2Deg : barrier1Deg;
                 if (barriersMoving) {
-                    return "→" + barrierDeg + "°";
+                    return "→" + d + "°";
                 }
-                return barrierDeg + "°";
+                return d + "°";
             }
             return "off";
         }

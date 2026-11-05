@@ -57,7 +57,8 @@ class NodeOutputMirrorTest {
         params.addProperty("warningMs", 5000);
         params.addProperty("wigwagOnMs", 400);
         params.addProperty("wigwagOffMs", 400);
-        params.addProperty("barrierTravelMs", 2500);
+        params.addProperty("barrier1TravelMs", 2500);
+        params.addProperty("barrier2TravelMs", 1800);
         JsonObject o = output("XC", "level_crossing",
                 pins("D2", "D3", "D4", "D5", "D6"),
                 trig("open", 9, "Forward"),
@@ -131,7 +132,8 @@ class NodeOutputMirrorTest {
         params.addProperty("warningMs", 50);
         params.addProperty("wigwagOnMs", 50);
         params.addProperty("wigwagOffMs", 50);
-        params.addProperty("barrierTravelMs", 50);
+        params.addProperty("barrier1TravelMs", 50);
+        params.addProperty("barrier2TravelMs", 50);
         params.addProperty("feedbackVirtual", "V2");
         params.addProperty("feedbackActiveState", 1);
         JsonObject o = output("XC", "level_crossing",
@@ -180,7 +182,8 @@ class NodeOutputMirrorTest {
                 trig("open", 2, "Forward"),
                 trig("closed", 2, "Reverse"));
         JsonObject xcParams = new JsonObject();
-        xcParams.addProperty("barrierTravelMs", 80);
+        xcParams.addProperty("barrier1TravelMs", 80);
+        xcParams.addProperty("barrier2TravelMs", 80);
         crossing.add("params", xcParams);
         mirror.syncConfig("Z", outs(point, crossing));
 
@@ -200,7 +203,10 @@ class NodeOutputMirrorTest {
         JsonObject barriers = mirror.statesJson("Z").get(1).getAsJsonObject();
         assertEquals("manual", barriers.get("phase").getAsString());
         assertEquals("30°", barriers.getAsJsonObject("pins").get("D10").getAsString());
-        assertEquals("30°", barriers.getAsJsonObject("pins").get("D11").getAsString());
+        // Barrier 2 stays at its own open angle — manual move is per servo.
+        assertEquals("90°", barriers.getAsJsonObject("pins").get("D11").getAsString());
+        assertEquals(30, barriers.get("barrier1Deg").getAsInt());
+        assertEquals(90, barriers.get("barrier2Deg").getAsInt());
     }
 
     private static boolean awaitState(NodeOutputMirror mirror, String prefix, String want, long timeoutMs)

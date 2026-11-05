@@ -2,17 +2,17 @@
   "images": [
     {
       "id": "mega-avr",
-      "version": "2026-11-01",
+      "version": "2026-11-05",
       "tool": "avrdude",
       "filename": "mega-avr.hex",
       "mcu": "atmega2560",
       "programmer": "wiring",
       "baud": 115200,
-      "sha256": "d651ffa6e53d441f18f52582fb51f304fd5798fc889dcbf9c1a0a11055deeef8"
+      "sha256": "211a2e98cc2c9d923814a0e7ca948212840716dd593e3ba207aaa54a7cfb0e68"
     },
     {
       "id": "mega-esp32",
-      "version": "2026-11-01",
+      "version": "2026-11-05",
       "tool": "esptool",
       "chip": "esp32",
       "baud": 460800,
@@ -44,13 +44,13 @@
         {
           "filename": "mega-esp32.bin",
           "offset": "0x10000",
-          "sha256": "29a95a311e0b96d7ed19f2c81b81dcfe4b256c1b0b1395973c7cb0a307d4607d"
+          "sha256": "54abff0fd7bf52cdbfad9865cc90de91b560fe5660fbbc5ca9548c6feea9a547"
         }
       ]
     },
     {
       "id": "nano-esp32",
-      "version": "2026-11-01",
+      "version": "2026-11-05",
       "tool": "esptool",
       "chip": "esp32s3",
       "baud": 460800,
@@ -82,7 +82,7 @@
         {
           "filename": "nano-esp32.bin",
           "offset": "0x10000",
-          "sha256": "84788aa1af557fd724a6a9bb82a3fc1bfe8c08987c7b14e9af4803bf4c207846"
+          "sha256": "146f3a8d995c6a594994b6bfe6b33eb2c847cec4780696bd0da87eac6ddd07b3"
         },
         {
           "filename": "nano-esp32.recovery.bin",
